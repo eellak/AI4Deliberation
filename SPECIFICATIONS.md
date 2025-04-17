@@ -18,9 +18,12 @@ This document outlines the technical specifications for scraping deliberation da
 - Main elements:
   - Title: `<h3>` heading containing consultation title
   - Description/Intro: Text content following the title
+  - Minister's message: Introductory message from the minister about the legislation
   - Ministry: Available in the header
   - Start/End dates: Typically in the introductory text
+  - Deliberation status: Finished or ongoing (determined by dates or status indicators)
   - Document links: PDF files (νομοσχέδιο, εκθέσεις, etc.)
+  - Result PDF: For finished deliberations, a PDF containing ministry's response/summary
   - Article list: Links to individual articles of the legislation
 
 ### Article Pages
@@ -57,18 +60,33 @@ This document outlines the technical specifications for scraping deliberation da
 
 ## Data Models
 
+### Ministry
+```python
+class Ministry:
+    code: str              # Ministry code in URL (e.g., 'ministryofjustice')
+    name: str              # Full ministry name
+    url: str               # Base URL to the ministry's consultation page
+    consultations: List[Consultation]  # Consultations from this ministry
+```
+
 ### Consultation
 ```python
 class Consultation:
     id: str                # Post ID
     title: str             # Consultation title
-    ministry: str          # Ministry code/name
+    start_minister_message: str  # Initial message from the minister (kickoff)
+    end_minister_message: str    # Final message from the minister (only for finished deliberations)
     start_date: datetime   # Start date of consultation
     end_date: datetime     # End date of consultation
+    is_finished: bool      # Whether deliberation is finished or ongoing
     url: str               # Full URL to consultation
     description: str       # Introduction/description text
     documents: List[Document]  # Associated documents
+
+    total_comments: int    # Total number of comments across all articles
+    accepted_comments: int # Number of accepted comments that were published
     articles: List[Article]    # Articles of legislation
+    ministry_id: str       # Reference to parent ministry
 ```
 
 ### Article
@@ -85,7 +103,7 @@ class Article:
 ```python
 class Comment:
     id: str                # Comment ID
-    author: str            # Comment author name
+    username: str          # Comment username
     date: datetime         # Date/time of comment
     content: str           # Comment text
     article_id: str        # ID of parent article
@@ -94,9 +112,11 @@ class Comment:
 ### Document
 ```python
 class Document:
+    id: str                # Document ID
     title: str             # Document title
     url: str               # URL to document (usually PDF)
-    type: str              # Type (law draft, report, etc.)
+    type: str              # Type: 'law_draft' (Σχέδιο Νόμου), 'analysis' (Ανάλυση Συνεπειών Ρύθμισης),
+                          # 'deliberation_report' (ΕΚΘΕΣΗ ΕΠΙ ΤΗΣ ΔΗΜΟΣΙΑΣ ΔΙΑΒΟΥΛΕΥΣΗΣ), or 'other'
     consultation_id: str   # ID of parent consultation
 ```
 
@@ -118,3 +138,5 @@ class Document:
 - Rate limiting to avoid overloading the server
 - Data validation and cleaning
 - Handling of different comment formats
+- Determining deliberation status accurately
+- Downloading and processing result PDFs for finished deliberations
