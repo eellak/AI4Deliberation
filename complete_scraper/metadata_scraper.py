@@ -5,161 +5,61 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
-import urllib.parse
+
+# Import utilities from shared module
+from utils import (
+    parse_greek_date, 
+    extract_content_text, 
+    find_element_with_fallbacks,
+    extract_post_id, 
+    build_absolute_url,
+    extract_ministry_info,
+    get_request_headers
+)
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
-def parse_greek_date(date_string):
-    """Parses a Greek date string in format 'DD Month YYYY, HH:MM' to a datetime object"""
-    try:
-        # Replace Greek month names with English equivalents
-        greek_months = {
-            'Ιανουαρίου': 'January',
-            'Φεβρουαρίου': 'February',
-            'Μαρτίου': 'March',
-            'Απριλίου': 'April',
-            'Μαΐου': 'May',
-            'Ιουνίου': 'June',
-            'Ιουλίου': 'July',
-            'Αυγούστου': 'August',
-            'Σεπτεμβρίου': 'September',
-            'Οκτωβρίου': 'October',
-            'Νοεμβρίου': 'November',
-            'Δεκεμβρίου': 'December'
-        }
-        
-        for greek, english in greek_months.items():
-            date_string = date_string.replace(greek, english)
-        
-        # Parse the date string
-        return datetime.strptime(date_string, '%d %B %Y, %H:%M')
-    except Exception as e:
-        logger.error(f"Error parsing date string '{date_string}': {e}")
-        return None
-
-def extract_content_text(element):
-    """Extract text content from an HTML element, preserving some structure"""
-    if not element:
-        return ""
-    
-    # Get text with basic formatting preserved
-    text_parts = []
-    
-    # Process paragraphs
-    paragraphs = element.find_all('p')
-    for p in paragraphs:
-        text_parts.append(p.get_text(strip=True))
-    
-    # Process lists
-    lists = element.find_all(['ul', 'ol'])
-    for lst in lists:
-        items = lst.find_all('li')
-        for item in items:
-            # Add bullet point for unordered lists
-            if lst.name == 'ul':
-                text_parts.append(f"• {item.get_text(strip=True)}")
-            else:
-                # For ordered lists, we don't know the exact number, so just use a bullet
-                text_parts.append(f"- {item.get_text(strip=True)}")
-    
-    # Process headings
-    headings = element.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
-    for heading in headings:
-        text_parts.append(heading.get_text(strip=True))
-    
-    return "\n\n".join(text_parts)
-
-def extract_ministry_info(url):
-    """Extract ministry information from the URL and page content"""
-    try:
-        # Parse URL to get ministry code
-        parsed_url = urllib.parse.urlparse(url)
-        hostname = parsed_url.netloc
-        path_parts = parsed_url.path.strip('/').split('/')
-        
-        # Try to extract ministry code from URL
-        ministry_code = None
-        if hostname.startswith('www.opengov.gr'):
-            ministry_code = path_parts[0] if path_parts else None
-        else:
-            # Handle case where ministry code is in subdomain
-            domain_parts = hostname.split('.')
-            if len(domain_parts) > 0 and 'opengov' in hostname:
-                potential_code = domain_parts[0]
-                if potential_code != 'www':
-                    ministry_code = potential_code
-        
-        # Construct ministry base URL
-        if ministry_code:
-            ministry_base_url = f"https://www.opengov.gr/{ministry_code}/"
-        else:
-            ministry_base_url = url[:url.find('?')] if '?' in url else url
-            
-        return {
-            'code': ministry_code,
-            'url': ministry_base_url,
-            'name': None  # We'll populate this with actual content scrape
-        }
-    except Exception as e:
-        logger.error(f"Error extracting ministry info from URL {url}: {e}")
-        return {
-            'code': None,
-            'url': None,
-            'name': None
-        }
 
 def scrape_consultation_metadata(url):
     """Scrape metadata about a consultation/legislation and return structured data for DB"""
     try:
         # Fetch the HTML content
         logger.info(f"Fetching URL: {url}")
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        }
-        response = requests.get(url, headers=headers, timeout=30)
+        response = requests.get(url, headers=get_request_headers(), timeout=30)
         response.raise_for_status()
         
         # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
         
-        # Extract post ID from URL
-        post_id = None
-        if '?p=' in url:
-            post_id = url.split('?p=')[1].split('&')[0]
-        
         # Initialize metadata dictionary
         metadata = {
-            'post_id': post_id,
+            'post_id': extract_post_id(url),
             'title': '',
             'start_minister_message': '',
             'end_minister_message': '',
             'start_date': None,
             'end_date': None,
-            'is_finished': False,
+            'is_finished': None,
             'url': url,
-            'description': '',
             'total_comments': 0,
-            'accepted_comments': 0
+            'accepted_comments': None
         }
         
         # Get ministry information
         ministry_info = extract_ministry_info(url)
         
         # 1. Get ministry name
-        try:
-            header_logo = soup.find('div', id='headerlogo')
-            if header_logo:
-                ministry_element = header_logo.find('h1').find('a')
+        header_logo = soup.find('div', id='headerlogo')
+        if header_logo:
+            ministry_element = header_logo.find('h1', recursive=True).find('a')
+            if ministry_element:
                 ministry_info['name'] = ministry_element.get_text(strip=True)
                 logger.info(f"Found ministry: {ministry_info['name']}")
-        except Exception as e:
-            logger.error(f"Error extracting ministry: {e}")
         
         # 2. Get dates and status
         try:
+            # Look for a red sidespot first (most common case)
             red_spot = soup.find('div', class_='sidespot red_spot')
             if red_spot:
                 h4_element = red_spot.find('h4')
@@ -179,51 +79,73 @@ def scrape_consultation_metadata(url):
                 countdown_span = red_spot.find('span', id='cntdwn')
                 if countdown_span and "Ολοκληρώθηκε" in countdown_span.get_text():
                     metadata['is_finished'] = True
-                else:
-                    # If no specific indicator, check the current date against end date
-                    metadata['is_finished'] = metadata['end_date'] is not None and datetime.now() > metadata['end_date']
-                
-                logger.info(f"Deliberation status: {'Finished' if metadata['is_finished'] else 'Ongoing'}")
+                    logger.info("Deliberation marked as finished by 'Ολοκληρώθηκε' text")
+                elif metadata['end_date']:
+                    # If no specific indicator, check against current date
+                    from datetime import datetime
+                    metadata['is_finished'] = datetime.now() > metadata['end_date']
+                    logger.info(f"Deliberation status determined by date: {'Finished' if metadata['is_finished'] else 'Ongoing'}")
+            else:
+                # Try alternate approaches if no red_spot div
+                # Some consultations might use different styling or structure
+                sidespots = soup.find_all('div', class_='sidespot')
+                for spot in sidespots:
+                    spot_text = spot.get_text()
+                    if "Διάστημα Διαβούλευσης" in spot_text:
+                        # Look for date pattern like "12 Μαρτίου 2025, 14:30"
+                        date_pattern = r'(\d+)\s+([Α-Ωα-ωίϊΐόάέύϋΰήώ]+)\s+(\d{4}),\s+(\d{1,2}):(\d{2})'
+                        date_matches = list(re.finditer(date_pattern, spot_text))
+                        
+                        if len(date_matches) >= 2:
+                            start_date_str = date_matches[0].group(0)
+                            end_date_str = date_matches[1].group(0)
+                            
+                            metadata['start_date'] = parse_greek_date(start_date_str)
+                            metadata['end_date'] = parse_greek_date(end_date_str)
+                            
+                            logger.info(f"Found dates using alternate pattern: {metadata['start_date']} to {metadata['end_date']}")
+                        
+                        # Check for completion keywords
+                        if "Ολοκληρώθηκε" in spot_text or "ολοκληρωμένη" in spot_text.lower():
+                            metadata['is_finished'] = True
+                            logger.info("Deliberation marked as finished through alternate text detection")
+                        break
+            
+            logger.info(f"Final deliberation status: {'Finished' if metadata['is_finished'] else 'Ongoing'}")
         except Exception as e:
             logger.error(f"Error extracting dates and status: {e}")
         
         # 3. Get related documents
         documents = []
-        try:
-            orange_spot = soup.find('div', class_='sidespot orange_spot')
-            if orange_spot:
-                spans = orange_spot.find_all('span', class_='file')
-                
-                for span in spans:
-                    try:
-                        link = span.find('a')
-                        if link:
-                            doc_title = link.get_text(strip=True)
-                            doc_url = urllib.parse.urljoin(url, link['href'])
-                            
-                            doc_type = 'other'
-                            if "Ανάλυση Συνεπειών Ρύθμισης" in doc_title:  # Analysis of Regulatory Consequences
-                                doc_type = 'analysis'
-                            elif "ΕΚΘΕΣΗ ΕΠΙ ΤΗΣ ΔΗΜΟΣΙΑΣ ΔΙΑΒΟΥΛΕΥΣΗΣ" in doc_title:  # Report on Public Deliberation
-                                doc_type = 'deliberation_report'
-                            elif "Σχέδιο Νόμου" in doc_title:  # Law Draft
-                                doc_type = 'law_draft'
-                            
-                            documents.append({
-                                'title': doc_title,
-                                'url': doc_url,
-                                'type': doc_type
-                            })
-                            
-                            logger.info(f"Found document: {doc_title} ({doc_type})")
-                    except Exception as e:
-                        logger.error(f"Error processing document span: {e}")
-        except Exception as e:
-            logger.error(f"Error extracting documents: {e}")
+        orange_spot = soup.find('div', class_='sidespot orange_spot')
+        if orange_spot:
+            file_spans = orange_spot.find_all('span', class_='file')
+            
+            for span in file_spans:
+                link = span.find('a')
+                if link:
+                    doc_title = link.get_text(strip=True)
+                    doc_url = build_absolute_url(url, link['href'])
+                    
+                    # Determine document type
+                    doc_type = 'other'
+                    if "Ανάλυση Συνεπειών Ρύθμισης" in doc_title:
+                        doc_type = 'analysis'
+                    elif "ΕΚΘΕΣΗ ΕΠΙ ΤΗΣ ΔΗΜΟΣΙΑΣ ΔΙΑΒΟΥΛΕΥΣΗΣ" in doc_title:
+                        doc_type = 'deliberation_report'
+                    elif "Σχέδιο Νόμου" in doc_title:
+                        doc_type = 'law_draft'
+                    
+                    documents.append({
+                        'title': doc_title,
+                        'url': doc_url,
+                        'type': doc_type
+                    })
+                    
+                    logger.info(f"Found document: {doc_title} ({doc_type})")
         
         # 4. Get comment statistics
         try:
-            # Find all sidespot divs without specific colors
             sidespots = soup.find_all('div', class_='sidespot')
             for spot in sidespots:
                 # Skip colored spots
@@ -232,17 +154,53 @@ def scrape_consultation_metadata(url):
                 
                 spot_text = spot.get_text()
                 
-                # Look for accepted comments pattern
-                accepted_match = re.search(r'(\d+)\s+Σχόλια\s+επι\s+της', spot_text)
-                if accepted_match:
-                    metadata['accepted_comments'] = int(accepted_match.group(1))
-                    logger.info(f"Found accepted comments: {metadata['accepted_comments']}")
+                # Try multiple patterns for comment statistics
+                # Pattern for accepted comments
+                accepted_patterns = [
+                    r'(\d+)\s+Σχόλια\s+επι\s+της',
+                    r'(\d+)\s+Σχόλια\s+επί\s+της',
+                    r'(\d+)\s+σχόλια\s+επι\s+της',
+                    r'(\d+)\s+σχόλια\s+επί\s+της'
+                ]
                 
-                # Look for total comments pattern
-                total_match = re.search(r'(\d+)\s+-\s+Όλα\s+τα\s+Σχόλια', spot_text)
-                if total_match:
-                    metadata['total_comments'] = int(total_match.group(1))
-                    logger.info(f"Found total comments: {metadata['total_comments']}")
+                for pattern in accepted_patterns:
+                    accepted_match = re.search(pattern, spot_text)
+                    if accepted_match:
+                        metadata['accepted_comments'] = int(accepted_match.group(1))
+                        logger.info(f"Found accepted comments: {metadata['accepted_comments']}")
+                        break
+                
+                # Pattern for total comments
+                total_patterns = [
+                    r'(\d+)\s+-\s+Όλα\s+τα\s+Σχόλια',
+                    r'(\d+)\s+-\s+Όλα\s+τα\s+σχόλια',
+                    r'(\d+)\s+σχόλια\s+συνολικά',
+                    r'(\d+)\s+Σχόλια\s+συνολικά',
+                    r'συνολικά\s+(\d+)\s+σχόλια'
+                ]
+                
+                for pattern in total_patterns:
+                    total_match = re.search(pattern, spot_text)
+                    if total_match:
+                        metadata['total_comments'] = int(total_match.group(1))
+                        logger.info(f"Found total comments: {metadata['total_comments']}")
+                        break
+            
+            # As a fallback, if we have accepted comments but no total, use accepted as total
+            if metadata['accepted_comments'] > 0 and metadata['total_comments'] == 0:
+                metadata['total_comments'] = metadata['accepted_comments']
+                logger.info(f"Using accepted comments as total: {metadata['total_comments']}")
+                
+            # Check comment links to try another approach if needed
+            if metadata['total_comments'] == 0:
+                comment_links = soup.find_all('a', href=re.compile(r'allcomments'))
+                for link in comment_links:
+                    link_text = link.get_text()
+                    total_match = re.search(r'(\d+)', link_text)
+                    if total_match:
+                        metadata['total_comments'] = int(total_match.group(1))
+                        logger.info(f"Found total comments from link: {metadata['total_comments']}")
+                        break
         except Exception as e:
             logger.error(f"Error extracting comment statistics: {e}")
         
@@ -250,11 +208,24 @@ def scrape_consultation_metadata(url):
         try:
             post_div = soup.find('div', class_='post clearfix')
             if post_div:
-                # Get title
+                # Get title with multiple fallbacks
                 title_element = post_div.find('h3')
                 if title_element:
                     metadata['title'] = title_element.get_text(strip=True)
                     logger.info(f"Found title: {metadata['title']}")
+                else:
+                    # Try other common title elements
+                    for tag in ['h1', 'h2', 'h4', 'strong']:
+                        alt_title = post_div.find(tag)
+                        if alt_title:
+                            metadata['title'] = alt_title.get_text(strip=True)
+                            logger.info(f"Found title using alternate tag {tag}: {metadata['title']}")
+                            break
+                
+                # If no title found, construct it from post_id
+                if not metadata['title'] and metadata['post_id']:
+                    metadata['title'] = f"Δημόσια Διαβούλευση Υπουργείου Δικαιοσύνης {metadata['post_id']}"
+                    logger.info(f"Created default title from post_id: {metadata['title']}")
                 
                 # Get end minister message (for finished deliberations)
                 end_message_div = post_div.find('div', class_='post_content is_complete')
@@ -263,30 +234,43 @@ def scrape_consultation_metadata(url):
                     logger.info(f"Found end minister message: {len(metadata['end_minister_message'])} chars")
                 
                 # Get start minister message
-                # Find the div that only has class='post_content' without 'is_complete'
+                # First approach: Find divs with just class='post_content' and not 'is_complete'
                 all_content_divs = post_div.find_all('div', class_='post_content')
+                
                 for div in all_content_divs:
-                    # Get the class attribute as a list
+                    # Skip the end message div if we already found it
+                    if div == end_message_div:
+                        continue
+                        
+                    # Check if this div has 'post_content' without 'is_complete'
                     classes = div.get('class', [])
-                    # Check if this div has only 'post_content' without 'is_complete'
                     if 'post_content' in classes and 'is_complete' not in classes:
                         metadata['start_minister_message'] = extract_content_text(div)
-                        logger.info(f"Found start minister message: {len(metadata['start_minister_message'])} chars")
-                        break
+                        if metadata['start_minister_message']:
+                            logger.info(f"Found start minister message: {len(metadata['start_minister_message'])} chars")
+                            break
                 
-                # If we still don't have a start message and there's an end message, try to find any content
+                # Fallback #1: If still no start message, try any content div that's not the end message
                 if not metadata['start_minister_message'] and len(all_content_divs) > 1:
-                    # Find the div that is different from our end message div
                     for div in all_content_divs:
-                        # Skip the div we already processed as end message
                         if div == end_message_div:
                             continue
-                        # Use this div as our start message
                         metadata['start_minister_message'] = extract_content_text(div)
-                        logger.info(f"Found start minister message (alt): {len(metadata['start_minister_message'])} chars")
-                        break
+                        if metadata['start_minister_message']:
+                            logger.info(f"Found start minister message (fallback 1): {len(metadata['start_minister_message'])} chars")
+                            break
+                
+                # Fallback #2: Look at the first substantial paragraph in the post div
+                if not metadata['start_minister_message']:
+                    paragraphs = post_div.find_all('p')
+                    for p in paragraphs:
+                        text = p.get_text(strip=True)
+                        if len(text) > 100:  # Must be a substantial paragraph
+                            metadata['start_minister_message'] = text
+                            logger.info(f"Found start minister message (fallback 2): {len(metadata['start_minister_message'])} chars")
+                            break
         except Exception as e:
-            logger.error(f"Error extracting minister messages: {e}")
+            logger.error(f"Error extracting title and minister messages: {e}")
         
         # Return structured data
         return {
@@ -306,7 +290,7 @@ if __name__ == "__main__":
     if result:
         print("\nConsultation Metadata:")
         for key, value in result['consultation'].items():
-            if key != 'minister_message' and key != 'end_minister_message':
+            if key != 'start_minister_message' and key != 'end_minister_message':
                 print(f"{key}: {value}")
         
         print("\nMinistry Info:")
@@ -317,5 +301,5 @@ if __name__ == "__main__":
         for doc in result['documents']:
             print(f"- {doc['title']} ({doc['type']}): {doc['url']}")
         
-        print(f"\nMinister Message Length: {len(result['consultation']['minister_message'])} chars")
+        print(f"\nStart Minister Message Length: {len(result['consultation']['start_minister_message'])} chars")
         print(f"End Minister Message Length: {len(result['consultation']['end_minister_message'])} chars")

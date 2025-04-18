@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import os
 from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -34,12 +34,11 @@ class Consultation(Base):
     end_minister_message = Column(Text)
     start_date = Column(DateTime)
     end_date = Column(DateTime)
-    is_finished = Column(Boolean, default=False)
+    is_finished = Column(Boolean, nullable=True)
     url = Column(String(255), nullable=False, unique=True)
-    description = Column(Text)
 
     total_comments = Column(Integer, default=0)
-    accepted_comments = Column(Integer, default=0)
+    accepted_comments = Column(Integer, nullable=True)
     ministry_id = Column(Integer, ForeignKey('ministries.id'))
     
     # Relationships
@@ -58,6 +57,7 @@ class Article(Base):
     post_id = Column(String(50), nullable=False)
     title = Column(String(500), nullable=False)
     content = Column(Text)
+    raw_html = Column(Text)  # Store unformatted HTML content
     url = Column(String(255), nullable=False, unique=True)
     consultation_id = Column(Integer, ForeignKey('consultations.id'))
     
@@ -101,8 +101,13 @@ class Document(Base):
     def __repr__(self):
         return f"<Document(title='{self.title}', type='{self.type}')>"
 
-def init_db(db_url='sqlite:///deliberation_data.db'):
+def init_db(db_url=None):
     """Initialize the database, creating all tables"""
+    if db_url is None:
+        # Use the project root directory for the database
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        db_path = os.path.join(project_root, 'deliberation_data_gr.db')
+        db_url = f'sqlite:///{db_path}'
     engine = create_engine(db_url)
     Base.metadata.create_all(engine)
     Session = sessionmaker(bind=engine)

@@ -120,6 +120,62 @@ class Document:
     consultation_id: str   # ID of parent consultation
 ```
 
+## Database Schema
+
+### Ministries Table
+```
+id: Integer (Primary Key)
+code: String (100) [Not Null, Unique]
+name: String (255) [Not Null]
+url: String (255) [Not Null]
+```
+
+### Consultations Table
+```
+id: Integer (Primary Key)
+post_id: String (50) [Not Null]
+title: String (500) [Not Null]
+start_minister_message: Text
+end_minister_message: Text
+start_date: DateTime
+end_date: DateTime
+is_finished: Boolean [Nullable]
+url: String (255) [Not Null, Unique]
+total_comments: Integer [Default: 0]
+accepted_comments: Integer [Nullable]
+ministry_id: Integer [Foreign Key to ministries.id]
+```
+
+### Articles Table
+```
+id: Integer (Primary Key)
+post_id: String (50) [Not Null]
+title: String (500) [Not Null]
+content: Text
+raw_html: Text
+url: String (255) [Not Null, Unique]
+consultation_id: Integer [Foreign Key to consultations.id]
+```
+
+### Comments Table
+```
+id: Integer (Primary Key)
+comment_id: String (50)
+username: String (255) [Not Null]
+date: DateTime
+content: Text [Not Null]
+article_id: Integer [Foreign Key to articles.id]
+```
+
+### Documents Table
+```
+id: Integer (Primary Key)
+title: String (255) [Not Null]
+url: String (255) [Not Null, Unique]
+type: String (100)
+consultation_id: Integer [Foreign Key to consultations.id]
+```
+
 ## Implementation Strategy
 
 1. Start with a basic scraper for the consultation list page
