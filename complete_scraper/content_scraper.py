@@ -27,8 +27,14 @@ def extract_article_links(url):
     try:
         # Fetch the HTML content
         logger.info(f"Fetching article list from URL: {url}")
-        response = requests.get(url, headers=get_request_headers(), timeout=30)
+        response = requests.get(url, headers=get_request_headers(), timeout=30, allow_redirects=True)
         response.raise_for_status()
+        
+        # Get the final URL after any redirections
+        final_url = response.url
+        if final_url != url:
+            logger.info(f"URL was redirected: {url} -> {final_url}")
+            url = final_url
         
         # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -107,18 +113,24 @@ def scrape_article_content(article_url):
     try:
         # Fetch the HTML content
         logger.info(f"Fetching article from URL: {article_url}")
-        response = requests.get(article_url, headers=get_request_headers(), timeout=30)
+        response = requests.get(article_url, headers=get_request_headers(), timeout=30, allow_redirects=True)
         response.raise_for_status()
+        
+        # Get the final URL after any redirections
+        final_url = response.url
+        if final_url != article_url:
+            logger.info(f"URL was redirected: {article_url} -> {final_url}")
+            article_url = final_url
         
         # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Initialize article info structure
         article_info = {
-            'post_id': extract_post_id(article_url),
+            'post_id': extract_post_id(article_url),  # Now using the final URL after redirects
             'title': '',
             'content': '',
-            'url': article_url,
+            'url': article_url,  # This is now the final URL after redirects
             'comments': []
         }
         

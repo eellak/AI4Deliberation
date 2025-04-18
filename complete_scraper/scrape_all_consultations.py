@@ -190,8 +190,8 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
                     result = scrape_and_store(url, session)
                     if result:
                         success_count += 1
-            except Exception as e:
-                logger.error(f"Error processing consultation {url}: {e}")
+                except Exception as e:
+                    logger.error(f"Error processing consultation {url}: {e}")
             
             processed_count += 1
             

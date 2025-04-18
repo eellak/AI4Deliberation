@@ -26,22 +26,28 @@ def scrape_consultation_metadata(url):
     try:
         # Fetch the HTML content
         logger.info(f"Fetching URL: {url}")
-        response = requests.get(url, headers=get_request_headers(), timeout=30)
+        response = requests.get(url, headers=get_request_headers(), timeout=30, allow_redirects=True)
         response.raise_for_status()
+        
+        # Get the final URL after any redirections
+        final_url = response.url
+        if final_url != url:
+            logger.info(f"URL was redirected: {url} -> {final_url}")
+            url = final_url
         
         # Parse HTML
         soup = BeautifulSoup(response.content, 'html.parser')
         
         # Initialize metadata dictionary
         metadata = {
-            'post_id': extract_post_id(url),
+            'post_id': extract_post_id(url),  # Now using the final URL after redirects
             'title': '',
             'start_minister_message': '',
             'end_minister_message': '',
             'start_date': None,
             'end_date': None,
             'is_finished': None,
-            'url': url,
+            'url': url,  # This is now the final URL after redirects
             'total_comments': 0,
             'accepted_comments': None
         }
