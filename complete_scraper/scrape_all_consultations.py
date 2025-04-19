@@ -190,15 +190,24 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
                     result = scrape_and_store(url, session)
                     if result:
                         success_count += 1
+                    else:
+                        logger.warning(f"Skipping consultation that returned False: {url}")
                 except Exception as e:
                     logger.error(f"Error processing consultation {url}: {e}")
+                    # Don't let one failure stop the entire batch
+                    session.rollback()  # Roll back any partial changes for this consultation
             
             processed_count += 1
             
             # Commit in batches to avoid large transactions
             if processed_count % batch_size == 0:
-                logger.info(f"Committing batch of {batch_size} consultations")
-                session.commit()
+                try:
+                    logger.info(f"Committing batch of {batch_size} consultations")
+                    session.commit()
+                except Exception as e:
+                    logger.error(f"Error in batch processing: {e}")
+                    session.rollback()  # Roll back the transaction
+                    # Continue with next batch rather than stopping entirely
                 
             # Add a small delay between consultations
             if i < len(consultation_links) - 1:
@@ -207,7 +216,13 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
                 time.sleep(delay)
         
         # Final commit for any remaining consultations
-        session.commit()
+        if processed_count % batch_size != 0:
+            try:
+                logger.info(f"Committing final batch of {processed_count % batch_size} consultations")
+                session.commit()
+            except Exception as e:
+                logger.error(f"Error in final batch processing: {e}")
+                session.rollback()  # Roll back the transaction
         
     except Exception as e:
         logger.error(f"Error in batch processing: {e}")

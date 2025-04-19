@@ -4,7 +4,12 @@
 import argparse
 import logging
 import os
+import sys
 from datetime import datetime
+from sqlalchemy import func
+
+# Add current directory to path for imports when called from other locations
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import our modules
 from db_models import init_db, Ministry, Consultation, Article, Comment, Document, Base
@@ -25,6 +30,12 @@ def scrape_and_store(url, session):
         logger.error(f"Failed to scrape metadata from {url}")
         return False
     
+    # Validate post_id - if it's None, we can't proceed
+    consultation_data = metadata_result['consultation']
+    if not consultation_data['post_id']:
+        logger.error(f"Missing post_id for URL: {url}. This consultation was likely redirected or no longer exists.")
+        return False
+    
     # Step 2: Extract ministry data and find or create ministry record
     ministry_data = metadata_result['ministry']
     ministry = session.query(Ministry).filter_by(code=ministry_data['code']).first()
@@ -40,9 +51,7 @@ def scrape_and_store(url, session):
         session.flush()  # Get the ID without committing
     
     # Step 3: Create consultation record
-    consultation_data = metadata_result['consultation']
-    
-    # Extract post_id from URL if not already available
+    # post_id was already validated above
     post_id = consultation_data['post_id']
     
     # Normalize URL for comparison (remove http/https differences)
@@ -74,7 +83,6 @@ def scrape_and_store(url, session):
             'end_date': existing_consultation.end_date,
             'is_finished': existing_consultation.is_finished,
             'total_comments': existing_consultation.total_comments,
-            'accepted_comments': existing_consultation.accepted_comments,
             'start_minister_message': len(existing_consultation.start_minister_message or ''),
             'end_minister_message': len(existing_consultation.end_minister_message or '')
         }
@@ -87,7 +95,6 @@ def scrape_and_store(url, session):
         existing_consultation.end_date = consultation_data['end_date']
         existing_consultation.is_finished = consultation_data['is_finished']
         existing_consultation.total_comments = consultation_data['total_comments']
-        existing_consultation.accepted_comments = consultation_data['accepted_comments']
         
         # Force SQLAlchemy to mark all fields as dirty to ensure update
         session.add(existing_consultation)
@@ -100,7 +107,6 @@ def scrape_and_store(url, session):
             'end_date': existing_consultation.end_date,
             'is_finished': existing_consultation.is_finished,
             'total_comments': existing_consultation.total_comments,
-            'accepted_comments': existing_consultation.accepted_comments,
             'start_minister_message': len(existing_consultation.start_minister_message or ''),
             'end_minister_message': len(existing_consultation.end_minister_message or '')
         }
@@ -127,7 +133,7 @@ def scrape_and_store(url, session):
             is_finished=consultation_data['is_finished'],
             url=url,
             total_comments=consultation_data['total_comments'],
-            accepted_comments=consultation_data['accepted_comments'],
+            accepted_comments=0,  # Initialize to 0, will be updated with actual comment count below
             ministry_id=ministry.id
         )
         session.add(consultation)
@@ -198,10 +204,17 @@ def scrape_and_store(url, session):
                 session.add(comment)
                 comment_count += 1
     
+    # Calculate accepted_comments as the sum of all comments in articles
+    total_comment_count = session.query(func.count(Comment.id)).join(Article).filter(Article.consultation_id == consultation.id).scalar() or 0
+    logger.info(f"Calculated actual comment count from articles: {total_comment_count}")
+    
+    # Update accepted_comments with the actual count
+    consultation.accepted_comments = total_comment_count
+    
     # Commit all changes to the database
     session.commit()
     
-    logger.info(f"Scrape complete. Added/updated: 1 consultation, {article_count} articles, {comment_count} comments")
+    logger.info(f"Scrape complete. Added/updated: {article_count} articles, {comment_count} comments")
     return True
 
 def main():
