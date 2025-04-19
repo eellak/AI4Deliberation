@@ -2,6 +2,8 @@
 
 A Python library for scraping and analyzing public deliberation data from the OpenGov.gr platform, specifically targeting the Greek Ministries' public consultations at https://www.opengov.gr/home/category/consultations.
 
+[![HuggingFace Dataset](https://img.shields.io/badge/🤗-HuggingFace%20Dataset-yellow)](https://huggingface.co/datasets/glossAPI/opengov.gr-diaboyleuseis/tree/main)
+
 ## Overview
 
 This project provides tools to extract, analyze, and process data from Greece's public consultation platform. Since OpenGov.gr does not provide an official API, this library implements web scraping techniques to access:
@@ -12,6 +14,14 @@ This project provides tools to extract, analyze, and process data from Greece's 
 - Consultation metadata (dates, status, ministry, etc.)
 
 The project has been enhanced with an improved document classification system that accurately categorizes documents into six different types based on their content and purpose.
+
+## Dataset
+
+A full database of scraped consultations is available on HuggingFace:
+
+**[Greek Public Consultations Dataset](https://huggingface.co/datasets/glossAPI/opengov.gr-diaboyleuseis/tree/main)**
+
+This SQLite database contains all consultations from OpenGov.gr with the improved document classification system. You can download the `deliberation_data_gr.db` file directly from the repository.
 
 ## Project Structure
 
