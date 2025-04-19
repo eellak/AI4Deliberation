@@ -14,7 +14,9 @@ from utils import (
     extract_post_id, 
     build_absolute_url,
     extract_ministry_info,
-    get_request_headers
+    get_request_headers,
+    normalize_text,
+    categorize_document
 )
 
 # Set up logging
@@ -48,8 +50,8 @@ def scrape_consultation_metadata(url):
             'end_date': None,
             'is_finished': None,
             'url': url,  # This is now the final URL after redirects
-            'total_comments': 0,
-            'accepted_comments': None
+            'total_comments': 0
+            # Removed accepted_comments as it will be calculated from article comments
         }
         
         # Get ministry information
@@ -133,14 +135,8 @@ def scrape_consultation_metadata(url):
                     doc_title = link.get_text(strip=True)
                     doc_url = build_absolute_url(url, link['href'])
                     
-                    # Determine document type
-                    doc_type = 'other'
-                    if "Ανάλυση Συνεπειών Ρύθμισης" in doc_title:
-                        doc_type = 'analysis'
-                    elif "ΕΚΘΕΣΗ ΕΠΙ ΤΗΣ ΔΗΜΟΣΙΑΣ ΔΙΑΒΟΥΛΕΥΣΗΣ" in doc_title:
-                        doc_type = 'deliberation_report'
-                    elif "Σχέδιο Νόμου" in doc_title:
-                        doc_type = 'law_draft'
+                    # Determine document type using the improved classification function
+                    doc_type = categorize_document(doc_title)
                     
                     documents.append({
                         'title': doc_title,
@@ -161,20 +157,7 @@ def scrape_consultation_metadata(url):
                 spot_text = spot.get_text()
                 
                 # Try multiple patterns for comment statistics
-                # Pattern for accepted comments
-                accepted_patterns = [
-                    r'(\d+)\s+Σχόλια\s+επι\s+της',
-                    r'(\d+)\s+Σχόλια\s+επί\s+της',
-                    r'(\d+)\s+σχόλια\s+επι\s+της',
-                    r'(\d+)\s+σχόλια\s+επί\s+της'
-                ]
-                
-                for pattern in accepted_patterns:
-                    accepted_match = re.search(pattern, spot_text)
-                    if accepted_match:
-                        metadata['accepted_comments'] = int(accepted_match.group(1))
-                        logger.info(f"Found accepted comments: {metadata['accepted_comments']}")
-                        break
+                # Removed accepted comments extraction - will be calculated from article comments instead
                 
                 # Pattern for total comments
                 total_patterns = [
@@ -192,10 +175,7 @@ def scrape_consultation_metadata(url):
                         logger.info(f"Found total comments: {metadata['total_comments']}")
                         break
             
-            # As a fallback, if we have accepted comments but no total, use accepted as total
-            if metadata['accepted_comments'] > 0 and metadata['total_comments'] == 0:
-                metadata['total_comments'] = metadata['accepted_comments']
-                logger.info(f"Using accepted comments as total: {metadata['total_comments']}")
+            # Removed fallback using accepted_comments
                 
             # Check comment links to try another approach if needed
             if metadata['total_comments'] == 0:

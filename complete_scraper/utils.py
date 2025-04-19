@@ -4,6 +4,7 @@
 import re
 import logging
 import urllib.parse
+import unicodedata
 from datetime import datetime
 from bs4 import BeautifulSoup
 
@@ -145,5 +146,70 @@ def extract_ministry_info(url):
 def get_request_headers():
     """Return headers for HTTP requests"""
     return {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Accept-Language': 'el-GR,el;q=0.9,en-US;q=0.8,en;q=0.7'
     }
+
+def normalize_text(text):
+    """
+    Normalizes text by:
+    1. Removing accents
+    2. Converting to UPPERCASE
+    
+    Args:
+        text: Original text
+    
+    Returns:
+        Normalized text
+    """
+    if not text:
+        return ""
+    
+    # Remove accents
+    normalized = unicodedata.normalize('NFKD', text)
+    normalized = ''.join([c for c in normalized if not unicodedata.combining(c)])
+    
+    # Convert to uppercase
+    normalized = normalized.upper()
+    
+    return normalized
+
+
+def categorize_document(title):
+    """
+    Categorizes a document based on its normalized title.
+    
+    Args:
+        title: Document title
+        
+    Returns:
+        Document type: 'law_draft', 'analysis', 'deliberation_report', 'other_draft',
+        'other_report', or 'other'
+    """
+    # Normalize the title
+    normalized_title = normalize_text(title)
+    
+    # Check for law draft - look for both words separately
+    if 'ΣΧΕΔΙΟ' in normalized_title and 'ΝΟΜΟΥ' in normalized_title:
+        return 'law_draft'
+    
+    # Check for analysis - look for both words separately
+    if 'ΑΝΑΛΥΣΗ' in normalized_title and 'ΣΥΝΕΠΕΙΩΝ' in normalized_title:
+        return 'analysis'
+    
+    # Check for deliberation report - this was already looking for both words
+    if 'ΕΚΘΕΣΗ' in normalized_title and 'ΔΙΑΒΟΥΛΕΥΣΗ' in normalized_title:
+        return 'deliberation_report'
+    
+    # Check for non-law draft documents (only if none of the above matched)
+    # These are documents that contain ΣΧΕΔΙΟ but not ΝΟΜΟΥ
+    if 'ΣΧΕΔΙΟ' in normalized_title and 'ΝΟΜΟΥ' not in normalized_title:
+        return 'other_draft'
+    
+    # Check for general reports (only if none of the above matched)
+    # These are documents that contain ΕΚΘΕΣΗ but not ΔΙΑΒΟΥΛΕΥΣΗ
+    if 'ΕΚΘΕΣΗ' in normalized_title and 'ΔΙΑΒΟΥΛΕΥΣΗ' not in normalized_title:
+        return 'other_report'
+        
+    # Default to 'other'
+    return 'other'
