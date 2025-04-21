@@ -86,13 +86,15 @@ class Comment(Base):
         return f"<Comment(id={self.id}, author='{self.author}', date='{self.date}')>"
 
 class Document(Base):
-    """Document model"""
+    """Document model with content and extraction quality fields"""
     __tablename__ = 'documents'
     
     id = Column(Integer, primary_key=True)
     title = Column(String(255), nullable=False)
     url = Column(String(255), nullable=False, unique=True)
     type = Column(String(100))  # law_draft, analysis, deliberation_report, or other
+    content = Column(Text, nullable=True)  # Content of the downloaded and extracted PDF file
+    extraction_quality = Column(String(50), nullable=True)  # Indicates the quality of extraction as a string (e.g. 'good', 'bad', 'unknown')
     consultation_id = Column(Integer, ForeignKey('consultations.id'))
     
     # Relationships
