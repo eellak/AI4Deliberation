@@ -52,7 +52,7 @@ AI4Deliberation/
 - **Robust error handling**: Multiple fallback methods for data extraction
 - **Database storage**: Store all data in a normalized SQLite database
 - **Analytics**: Generate reports on database population and data quality
-- **Advanced document classification**: Categorize documents into six distinct types using a data-driven approach
+- **Document classification**: Categorize documents into six distinct types using a data-driven approach
 
 ## Using the Scraper
 
@@ -146,14 +146,6 @@ Documents are classified into six categories:
 5. **other_report**: Other report documents containing "ΕΚΘΕΣΗ" but not "ΔΙΑΒΟΥΛΕΥΣΗ" (12.7%)
 6. **other**: Documents not falling into any of the above categories (31.8%)
 
-## CSS/XPath Selectors
-
-Based on analysis of the OpenGov.gr platform, we've identified the following key elements:
-
-- Main consultations list: Accessible at `/home/category/consultations`
-- Individual consultation pages: Structured as e.g. `/ypex/?p=1045`
-- Comments: Associated with specific articles and accessible via article pages
-- Document links: PDF and other documents embedded within consultation pages
 
 ## Development Status
 

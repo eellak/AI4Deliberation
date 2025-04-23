@@ -6,6 +6,7 @@ import os
 import time
 import argparse
 from random import uniform
+from datetime import datetime
 from bs4 import BeautifulSoup
 import requests
 from urllib.parse import urljoin
@@ -138,6 +139,45 @@ def get_all_consultation_links(start_page=1, end_page=None):
     return all_consultations
 
 
+def save_update_report(update_reports, output_file="unfinished_consultation_updates.txt"):
+    """Save the update reports to a file"""
+    try:
+        with open(output_file, 'w', encoding='utf-8') as f:
+            f.write("# Update Report for Unfinished Consultations\n\n")
+            f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+            
+            for url, title, changes in update_reports:
+                f.write(f"## {title}\n")
+                f.write(f"URL: {url}\n\n")
+                
+                update_stats = []
+                if changes['new_comments'] > 0:
+                    update_stats.append(f"+{changes['new_comments']} comments")
+                if changes['new_documents'] > 0:
+                    update_stats.append(f"+{changes['new_documents']} documents")
+                if changes['total_comments_change'] != 0:
+                    update_stats.append(f"{changes['total_comments_change']:+d} total comments")
+                if changes['start_message_changed']:
+                    update_stats.append("start minister message updated")
+                if changes['end_message_changed']:
+                    update_stats.append("end minister message updated")
+                if changes['status_change']:
+                    update_stats.append("status: unfinished → finished")
+                
+                if update_stats:
+                    f.write("Changes:\n")
+                    for stat in update_stats:
+                        f.write(f"- {stat}\n")
+                else:
+                    f.write("No changes detected\n")
+                f.write("\n")
+                
+        logger.info(f"Update report saved to {output_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Error saving update report: {e}")
+        return False
+
 def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_count=None, force_scrape=False):
     """Scrape consultations and store in database"""
     # Initialize database
@@ -149,6 +189,9 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
     processed_count = 0
     success_count = 0
     skipped_count = 0
+    
+    # Track update reports for unfinished consultations
+    update_reports = []
     
     logger.info(f"Starting to scrape {total_count} consultations to database")
     
@@ -179,14 +222,50 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
                             break
             
             if existing and not force_scrape:
-                logger.info(f"Skipping existing consultation: {url}")
-                skipped_count += 1
+                # Only skip if the consultation is already finished
+                if existing.is_finished:
+                    logger.info(f"Skipping finished consultation: {url}")
+                    skipped_count += 1
+                else:
+                    # Selectively update unfinished consultations
+                    logger.info(f"Updating unfinished consultation {processed_count+1}/{total_count}: {url}")
+                    try:
+                        # Use selective update mode with the existing consultation
+                        result, changes = scrape_and_store(url, session, selective_update=True, existing_cons=existing)
+                        if result:
+                            success_count += 1
+                            
+                            # Record update statistics
+                            update_stats = []
+                            if changes['new_comments'] > 0:
+                                update_stats.append(f"+{changes['new_comments']} comments")
+                            if changes['new_documents'] > 0:
+                                update_stats.append(f"+{changes['new_documents']} documents")
+                            if changes['total_comments_change'] != 0:
+                                update_stats.append(f"{changes['total_comments_change']:+d} total comments")
+                            if changes['start_message_changed']:
+                                update_stats.append("start minister message updated")
+                            if changes['end_message_changed']:
+                                update_stats.append("end minister message updated")
+                            if changes['status_change']:
+                                update_stats.append("status: unfinished → finished")
+                            
+                            if update_stats:
+                                stats_str = ", ".join(update_stats)
+                                logger.info(f"Update summary for {existing.title}: {stats_str}")
+                                # Add to the report list
+                                update_reports.append((url, existing.title, changes))
+                        else:
+                            logger.warning(f"Failed to update unfinished consultation: {url}")
+                    except Exception as e:
+                        logger.error(f"Error updating unfinished consultation {url}: {e}")
+                        session.rollback()
             else:
-                # Scrape and store this consultation
+                # Full scrape for new or forced consultations
                 logger.info(f"Processing consultation {processed_count+1}/{total_count}: {url}")
                 
                 try:
-                    # Use the existing scrape_and_store function
+                    # Use the existing scrape_and_store function without selective update
                     result = scrape_and_store(url, session)
                     if result:
                         success_count += 1
@@ -232,9 +311,16 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
     
     # Report results
     logger.info("=== Scraping Results ===")
-    logger.info(f"Total consultations processed: {processed_count}/{total_count}")
-    logger.info(f"Successfully scraped: {success_count}")
-    logger.info(f"Skipped (already in database): {skipped_count}")
+    logger.info(f"Batch processing complete. Processed {processed_count} consultations.")
+    logger.info(f"Success: {success_count}, Skipped: {skipped_count}")
+    
+    # Save update reports if we have any
+    if update_reports:
+        save_update_report(update_reports)
+    
+    # Close database session
+    session.close()
+    
     logger.info(f"Failed: {processed_count - success_count - skipped_count}")
     logger.info("=======================")
     

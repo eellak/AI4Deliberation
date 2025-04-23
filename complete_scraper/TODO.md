@@ -2,38 +2,43 @@
 
 ## Scraper Improvements
 
-### Enhanced Incremental Scraping Logic
+### Enhanced Incremental Scraping Logic ✅
 
-The current implementation of `scrape_all_consultations.py` should be improved to make better use of incremental scraping. Currently, we only have two options:
+The implementation of `scrape_all_consultations.py` has been improved to make better use of incremental scraping. Now, we have the following capabilities:
 
-1. Skip consultations that already exist in the database (default behavior)
-2. Re-scrape everything with `--force-scrape` (inefficient)
+1. Skip consultations that already exist in the database and are marked as finished (default behavior)
+2. Selectively update consultations that are unfinished to capture new comments and documents
+3. Re-scrape everything with `--force-scrape` when needed (for complete refreshes)
 
-What we actually need to implement is a smarter incremental scraping approach:
+The implemented incremental scraping approach includes:
 
 1. **New Consultation Detection**:
-   - Look for consultations that do not already exist in the database by title
-   - This would allow us to find consultations even if the URL structure has changed
+   - Find and fully scrape consultations that do not exist in the database
 
-2. **Update In-Progress Consultations**:
+2. **Update In-Progress Consultations** ✅:
    - For consultations that already exist but have `is_finished = False`:
-     - Re-scrape them to get any new comments
-     - Update minister messages (especially end_minister_message when consultations conclude)
-     - Update any new documents that may have been added
-     - Update the consultation status if it has completed
+     - Re-scrape them to get any new comments ✅
+     - Update minister messages (especially end_minister_message when consultations conclude) ✅
+     - Update any new documents that may have been added ✅
+     - Update the consultation status if it has completed ✅
 
 3. **Optimization**:
-   - Add flags to control which aspects to update (comments, documents, status)
-   - Add timestamp tracking to only fetch comments newer than the last scrape
-   - Consider adding a `--update-unfinished` flag to specifically target in-progress consultations
+   - Added comprehensive change tracking and reporting ✅
+   - The scraper generates a detailed report of all changes made to unfinished consultations ✅
 
 ### Implementation Tasks
 
 - [ ] Modify the consultation matching logic to check by title as well as URL/post_id
-- [ ] Add logic to detect and update in-progress consultations
-- [ ] Implement selective updating of consultation components
-- [ ] Add better progress tracking and reporting
+- [x] Add logic to detect and update in-progress consultations
+- [x] Implement selective updating of consultation components
+- [x] Add better progress tracking and reporting
 - [ ] Update documentation to reflect new functionality
+
+### Future Enhancements
+
+- [ ] Add timestamp tracking to only fetch comments newer than the last scrape
+- [ ] Add flags to control which specific aspects to update (comments, documents, status)
+- [ ] Consider adding a `--update-unfinished-only` flag to specifically target in-progress consultations
 
 ## PDF Processing Pipeline
 

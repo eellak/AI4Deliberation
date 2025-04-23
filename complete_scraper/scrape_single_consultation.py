@@ -20,9 +20,25 @@ from content_scraper import scrape_consultation_content
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def scrape_and_store(url, session):
-    """Scrape a consultation URL and store all data in the database"""
-    logger.info(f"Starting scrape of URL: {url}")
+def scrape_and_store(url, session, selective_update=False, existing_cons=None):
+    """Scrape a consultation URL and store all data in the database.
+    
+    If selective_update is True and existing_cons is provided, only updates
+    minister messages, comments, and document links for unfinished consultations.
+    
+    Returns True if successful, and a dictionary of changes when selective_update is True.
+    """
+    logger.info(f"Starting {'selective update' if selective_update else 'full scrape'} of URL: {url}")
+    
+    # Initialize change tracking dictionary
+    changes = {
+        'new_comments': 0,
+        'new_documents': 0,
+        'status_change': False,
+        'total_comments_change': 0,
+        'start_message_changed': False,
+        'end_message_changed': False
+    }
     
     # Step 1: Scrape metadata
     metadata_result = scrape_consultation_metadata(url)
@@ -152,16 +168,49 @@ def scrape_and_store(url, session):
                 consultation_id=consultation.id
             )
             session.add(document)
+            
+            # If we're doing a selective update, track new documents
+            if selective_update:
+                changes['new_documents'] += 1
     
     # Step 5: Scrape article content and comments
     articles_data = scrape_consultation_content(url)
     if not articles_data:
         logger.error(f"Failed to scrape articles from {url}")
         # Continue anyway, as we might have metadata
+        
+    # If we're doing a selective update of an unfinished consultation that is now finished,
+    # record this status change
+    if selective_update and existing_cons:
+        if not existing_cons.is_finished and consultation_data['is_finished']:
+            changes['status_change'] = True
+            logger.info("Consultation status changed from unfinished to finished")
     
     # Step 6: Create article and comment records
     article_count = 0
     comment_count = 0
+    
+    # If this is a selective update, we only need to track changes to comments
+    if selective_update and existing_cons:
+        # Track changes to minister messages
+        old_start_message = existing_cons.start_minister_message or ""
+        new_start_message = consultation_data['start_minister_message'] or ""
+        if old_start_message != new_start_message:
+            changes['start_message_changed'] = True
+            logger.info(f"Start minister message changed: {len(old_start_message)} chars -> {len(new_start_message)} chars")
+            
+        old_end_message = existing_cons.end_minister_message or ""
+        new_end_message = consultation_data['end_minister_message'] or ""
+        if old_end_message != new_end_message:
+            changes['end_message_changed'] = True
+            logger.info(f"End minister message changed: {len(old_end_message)} chars -> {len(new_end_message)} chars")
+            
+        # Track changes to total comments
+        old_total = existing_cons.total_comments or 0
+        new_total = consultation_data['total_comments'] or 0
+        if old_total != new_total:
+            changes['total_comments_change'] = new_total - old_total
+            logger.info(f"Total comments changed: {old_total} -> {new_total} (change: {changes['total_comments_change']})")
     
     for article_data in articles_data:
         # Check if article already exists
@@ -203,6 +252,10 @@ def scrape_and_store(url, session):
                 )
                 session.add(comment)
                 comment_count += 1
+                
+                # If we're doing a selective update, track new comments
+                if selective_update:
+                    changes['new_comments'] += 1
     
     # Calculate accepted_comments as the sum of all comments in articles
     total_comment_count = session.query(func.count(Comment.id)).join(Article).filter(Article.consultation_id == consultation.id).scalar() or 0
@@ -215,7 +268,11 @@ def scrape_and_store(url, session):
     session.commit()
     
     logger.info(f"Scrape complete. Added/updated: {article_count} articles, {comment_count} comments")
-    return True
+    
+    if selective_update:
+        return True, changes
+    else:
+        return True
 
 def main():
     """Main entry point for the program"""
