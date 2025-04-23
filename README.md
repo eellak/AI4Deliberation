@@ -2,6 +2,10 @@
 
 A Python library for scraping and analyzing public deliberation data from the OpenGov.gr platform, specifically targeting the Greek Ministries' public consultations at https://www.opengov.gr/home/category/consultations.
 
+## 🤗 Dataset
+
+**[Greek Public Consultations Dataset on HuggingFace](https://huggingface.co/datasets/glossAPI/opengov.gr-diaboyleuseis/tree/main)**
+
 [![HuggingFace Dataset](https://img.shields.io/badge/🤗-HuggingFace%20Dataset-yellow)](https://huggingface.co/datasets/glossAPI/opengov.gr-diaboyleuseis/tree/main)
 
 ## Overview
@@ -15,31 +19,33 @@ This project provides tools to extract, analyze, and process data from Greece's 
 
 The project has been enhanced with an improved document classification system that accurately categorizes documents into six different types based on their content and purpose.
 
-## Dataset
+## Complete Dataset Access
 
-A full database of scraped consultations is available on HuggingFace:
+The complete database of scraped consultations is available on the HuggingFace repository. This SQLite database contains all consultations from OpenGov.gr with the improved document classification system and extracted PDF content.
 
-**[Greek Public Consultations Dataset](https://huggingface.co/datasets/glossAPI/opengov.gr-diaboyleuseis/tree/main)**
-
-This SQLite database contains all consultations from OpenGov.gr with the improved document classification system. You can download the `deliberation_data_gr.db` file directly from the repository.
+You can download the `deliberation_data_gr_updated.db` file directly from the repository for immediate use in your research or applications.
 
 ## Project Structure
 
 ```
 AI4Deliberation/
 ├── README.md                    # This documentation file
-├── SPECIFICATIONS.md            # Technical specifications document
-├── SELECTORS.md                 # CSS/XPath selectors for scraping
-├── deliberation_data_gr.db      # SQLite database for storing scraped data
-└── complete_scraper/            # Main scraper implementation
-    ├── content_scraper.py       # Scraper for article content and comments
-    ├── db_models.py             # SQLAlchemy database models
-    ├── db_population_report.py  # Tool to analyze database population
-    ├── list_consultations.py    # Tool to list all consultations to CSV
-    ├── metadata_scraper.py      # Scraper for consultation metadata
-    ├── scrape_all_consultations.py # Scrape multiple consultations
-    ├── scrape_single_consultation.py # Scrape a single consultation
-    └── utils.py                # Utility functions for all scrapers
+├── complete_scraper/            # Main scraper implementation
+│   ├── content_scraper.py       # Scraper for article content and comments
+│   ├── db_models.py             # SQLAlchemy database models
+│   ├── db_population_report.py  # Tool to analyze database population
+│   ├── list_consultations.py    # Tool to list all consultations to CSV
+│   ├── metadata_scraper.py      # Scraper for consultation metadata
+│   ├── scrape_all_consultations.py # Scrape multiple consultations
+│   ├── scrape_single_consultation.py # Scrape a single consultation
+│   ├── TODO.md                  # Project roadmap and completed features
+│   └── utils.py                 # Utility functions for all scrapers
+└── pdf_pipeline/                # PDF processing pipeline implementation
+    ├── export_documents_to_parquet.py  # Export documents for processing
+    ├── process_document_redirects.py   # Resolve URL redirects for PDFs
+    ├── process_pdfs_with_glossapi.py   # Extract content using GlossAPI
+    ├── run_pdf_pipeline.py             # End-to-end pipeline orchestrator
+    └── update_database_with_content.py # Update DB with extracted content
 ```
 
 ## Features
@@ -49,6 +55,8 @@ AI4Deliberation/
 - **Deep content retrieval**: Extract article text, comments, and structured discussion data
 - **Document links**: Gather links to official PDF documents (draft laws, reports, etc.)
 - **Incremental updates**: Skip already scraped consultations unless forced to re-scrape
+- **PDF document processing**: Extract and analyze content from linked PDF documents using [GlossAPI](https://github.com/eellak/glossAPI)
+- **Extraction quality assessment**: Evaluate and record the quality of PDF content extraction
 - **Robust error handling**: Multiple fallback methods for data extraction
 - **Database storage**: Store all data in a normalized SQLite database
 - **Analytics**: Generate reports on database population and data quality
@@ -87,6 +95,26 @@ To scrape a single consultation, use `scrape_single_consultation.py`:
 ```bash
 python3 complete_scraper/scrape_single_consultation.py "https://www.opengov.gr/ministry_code/?p=consultation_id"
 ```
+
+### Processing PDF Documents
+
+The project includes a dedicated PDF processing pipeline for extracting content from document links:
+
+```bash
+# Run the complete PDF processing pipeline
+python3 pdf_pipeline/run_pdf_pipeline.py
+
+# Run specific steps of the pipeline (1=export, 2=redirects, 3=processing, 4=database update)
+python3 pdf_pipeline/run_pdf_pipeline.py --start=2 --end=4
+
+# Run individual components for more control
+python3 pdf_pipeline/export_documents_to_parquet.py  # Step 1: Export document URLs
+python3 pdf_pipeline/process_document_redirects.py   # Step 2: Resolve URL redirects
+python3 pdf_pipeline/process_pdfs_with_glossapi.py   # Step 3: Process PDFs with GlossAPI
+python3 pdf_pipeline/update_database_with_content.py # Step 4: Update database with content
+```
+
+The pipeline intelligently processes only documents that need content extraction, manages its own workspace, and provides detailed logs of the process. PDF content extraction is performed using [GlossAPI](https://github.com/eellak/glossAPI), an advanced document processing library developed for extracting and analyzing Greek text from PDFs.
 
 ## Database Schema
 

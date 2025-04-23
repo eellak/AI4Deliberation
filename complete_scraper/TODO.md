@@ -40,13 +40,22 @@ The implemented incremental scraping approach includes:
 - [ ] Add flags to control which specific aspects to update (comments, documents, status)
 - [ ] Consider adding a `--update-unfinished-only` flag to specifically target in-progress consultations
 
-## PDF Processing Pipeline
+## PDF Processing Pipeline ✅
 
-Now that we've added the `content` and `extraction_quality` fields to the Document model, we need to implement a PDF processing pipeline that will:
+Implemented a comprehensive PDF processing pipeline that:
 
-1. Download PDF documents from the URLs stored in the database
-2. Extract text content from the PDFs
-3. Assess the quality of the extraction
-4. Update the database with the extracted content and quality metrics
+1. ✅ Downloads PDF documents from the URLs stored in the database
+2. ✅ Extracts text content from the PDFs using GlossAPI
+3. ✅ Assesses the quality of the extraction 
+4. ✅ Updates the database with the extracted content and quality metrics
 
-This should be implemented as a separate script/module to keep concerns separated.
+The implementation includes:
+- A modular approach with separate scripts for each stage of the pipeline
+- Automated workspace directory creation and management
+- Intelligent filtering to only process documents that need extraction
+- Efficient handling of URL redirects to find actual PDF locations
+- Integration with GlossAPI for high-quality PDF extraction
+- Robust error handling and detailed logging
+- Optional document sectioning for more structured content
+
+The pipeline is implemented in the `/pdf_pipeline` directory as a standalone module.
