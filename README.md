@@ -40,6 +40,9 @@ AI4Deliberation/
 │   ├── scrape_single_consultation.py # Scrape a single consultation
 │   ├── TODO.md                  # Project roadmap and completed features
 │   └── utils.py                 # Utility functions for all scrapers
+├── html_pipeline/               # HTML text extraction pipeline
+│   ├── README.md                # Documentation for this pipeline
+│   └── html_to_text.py          # Script to extract text from raw HTML using docling
 └── pdf_pipeline/                # PDF processing pipeline implementation
     ├── export_documents_to_parquet.py  # Export documents for processing
     ├── process_document_redirects.py   # Resolve URL redirects for PDFs
@@ -53,8 +56,10 @@ AI4Deliberation/
 - **Comprehensive scraping**: Extract data from all public consultations on OpenGov.gr
 - **Metadata extraction**: Capture consultation titles, dates, ministry information, and status
 - **Deep content retrieval**: Extract article text, comments, and structured discussion data
+- **Raw HTML capture**: Scraper captures the raw HTML content of articles.
 - **Document links**: Gather links to official PDF documents (draft laws, reports, etc.)
 - **Incremental updates**: Skip already scraped consultations unless forced to re-scrape
+- **HTML Text Extraction Pipeline**: Dedicated pipeline using `docling` to extract clean text from stored raw HTML.
 - **PDF document processing**: Extract and analyze content from linked PDF documents using [GlossAPI](https://github.com/eellak/glossAPI)
 - **Extraction quality assessment**: Evaluate and record the quality of PDF content extraction
 - **Robust error handling**: Multiple fallback methods for data extraction
@@ -87,6 +92,20 @@ python3 complete_scraper/scrape_all_consultations.py --db-path "sqlite:///path/t
 # Commit changes to database in smaller batches
 python3 complete_scraper/scrape_all_consultations.py --batch-size 5
 ```
+
+### Extracting Text from HTML Content
+
+After running the main scraper (`scrape_all_consultations.py` or `scrape_single_consultation.py`) to populate the database with raw HTML, use the `html_pipeline` to extract clean text content using `docling`:
+
+```bash
+# Run the HTML text extraction pipeline
+python3 html_pipeline/html_to_text.py --db-path path/to/your/database.db
+
+# Limit the number of articles to process
+python3 html_pipeline/html_to_text.py --db-path path/to/your/database.db --limit 500
+```
+
+See the `html_pipeline/README.md` for more details.
 
 ### Scraping a Single Consultation
 
@@ -152,7 +171,8 @@ The scraped data is stored in a SQLite database with the following structure:
    - `consultation_id`: Foreign key to consultations table
    - `post_id`: Internal post ID for the article
    - `title`: Article title
-   - `content`: Full text content of the article
+   - `raw_html`: Raw HTML content of the article body (populated by the main scraper)
+   - `content`: Cleaned text content of the article (populated by the `html_pipeline` using docling)
    - `url`: URL to the article page
 
 5. **comments**

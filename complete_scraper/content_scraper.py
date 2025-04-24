@@ -149,9 +149,9 @@ def scrape_article_content(article_url):
             article_info['raw_html'] = str(content_div)
             logger.info(f"Raw HTML content captured: {len(article_info['raw_html'])} chars")
             
-            # Store the formatted content text
-            article_info['content'] = extract_content_text(content_div)
-            logger.info(f"Formatted content extracted: {len(article_info['content'])} chars")
+            # Store the formatted content text (COMMENTED OUT - Handled by separate pipeline)
+            # article_info['content'] = extract_content_text(content_div)
+            # logger.info(f"Formatted content extracted: {len(article_info['content'])} chars")
         
         # Extract comments
         article_info['comments'] = extract_comments(soup, article_url)
@@ -377,7 +377,7 @@ if __name__ == "__main__":
             print(f"\nArticle {i+1}: {article['title']}")
             print(f"  ID: {article['post_id']}")
             print(f"  URL: {article['url']}")
-            print(f"  Content length: {len(article['content'])} chars")
+            print(f"  Content length: {len(article['raw_html'])} chars")
             print(f"  Comments: {len(article['comments'])}")
             
             # Print first 2 comments if any
