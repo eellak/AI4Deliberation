@@ -4,12 +4,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::fs;
+use std::fs::{self};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use walkdir::WalkDir;
+use rayon::prelude::*;
+use rayon::ThreadPoolBuilder;
 
-// Regular expressions for detection (compiled once)
 lazy_static! {
-    // Modified to only count tags at word boundaries or line start/end
+    // Regular expressions for detection (compiled once)
     static ref GLYPH_TAG_REGEX_RAW: Regex = Regex::new(r"(?:^|\s)glyph<c=\d+,font=/[^>]+>(?:\s|$)").unwrap();
     static ref GLYPH_TAG_REGEX_HTML: Regex = Regex::new(r"(?:^|\s)glyph&lt;c=\d+,font=/[^>]+&gt;(?:\s|$)").unwrap();
     static ref ANY_TAG_REGEX: Regex = Regex::new(r"(?:^|\s)<[^>]*>(?:\s|$)").unwrap();
@@ -263,136 +266,108 @@ fn analyze_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<HashMap<St
     })
 }
 
-#[pyfunction]
-fn clean_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<String> {
-    // Combine all the requested scripts into a single set of allowed characters
-    let mut allowed_chars = HashSet::new();
-    
-    for script in &scripts_to_keep {
-        if let Some(charset) = SCRIPT_SETS.get(script) {
-            for &c in charset {
-                allowed_chars.insert(c);
-            }
-        } else {
-            return Err(PyValueError::new_err(format!("Unknown script code: {}", script)));
-        }
-    }
-    
-    // Get the unusual characters set
-    let unusual_chars = match SCRIPT_SETS.get("unusual") {
-        Some(set) => set,
-        None => return Err(PyValueError::new_err("Unable to find unusual character set definition")),
-    };
-    
-    // Start cleaning process
-    let mut result = String::new();
-    
-    // Process the file line by line for better comment handling
+fn _internal_core_clean_text_logic(text: &str, allowed_chars: &HashSet<char>) -> String {
+    const TEXT_MISSING_COMMENT: &str = "<!-- text-missing -->";
+    const MIN_CHARS_FOR_COMMENT: usize = 5; // Minimum non-tag, non-whitespace chars removed to trigger comment
+
+    let unusual_chars_set = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
+    let mut cleaned_output = String::new();
+    // Accumulates removed chars for the current line to decide on comment insertion.
+    // Resets for each line *after* comment decision for that line has been made.
+    // let mut removed_chars_on_line_for_comment_decision: usize = 0;
+
     for line in text.lines() {
-        // Check if this line is a comment already
-        let is_comment_line = COMMENT_REGEX.is_match(line);
-        
-        if is_comment_line {
-            result.push_str(line);
-            result.push('\n');
-            continue;
-        }
-        
-        // Step 1: Replace glyph words
-        let glyph_matches: Vec<_> = GLYPH_WORD_REGEX.find_iter(line).collect();
-        
-        let mut line_after_glyph_cleanup = line.to_string();
-        let mut total_glyph_chars_removed = 0;
-        
-        // Replace glyph words in reverse order to maintain indices
-        for mat in glyph_matches.iter().rev() {
-            let removed_text = &line[mat.start()..mat.end()];
-            total_glyph_chars_removed += removed_text.len();
-            line_after_glyph_cleanup.replace_range(mat.start()..mat.end(), "");
-        }
-        
-        // Step 2: Remove unusual characters
-        let mut final_line = String::new();
-        let mut total_unusual_chars_removed = 0;
-        
-        // Check each character
-        for c in line_after_glyph_cleanup.chars() {
-            if unusual_chars.contains(&c) && !allowed_chars.contains(&c) {
-                total_unusual_chars_removed += 1;
+        let mut processed_line_segment = String::new(); // Builds the potentially cleaned version of the current line
+        let mut current_line_removed_chars_buffer = String::new(); // Chars removed from this line (tags, glyphs, unusual)
+
+        // 1. Handle tags: Preserve comments, remove others, count removed chars from non-comment tags.
+        let mut line_after_tag_handling = String::new();
+        let mut last_pos = 0;
+        for mat in ANY_TAG_CLEANING_REGEX.find_iter(line) {
+            line_after_tag_handling.push_str(&line[last_pos..mat.start()]);
+            let tag_content = mat.as_str();
+            if COMMENT_REGEX.is_match(tag_content) {
+                line_after_tag_handling.push_str(tag_content); // Preserve comment
             } else {
-                final_line.push(c);
-            }
-        }
-        
-        // Step 3: Remove HTML/XML tags but preserve comments
-        let _unused = String::new(); // Variable removed - was causing a warning
-        
-        // First store all comments in the line
-        let mut comments = Vec::new();
-        let mut comment_positions = Vec::new();
-        
-        for comment_match in COMMENT_REGEX.find_iter(&final_line) {
-            comments.push(comment_match.as_str().to_string());
-            comment_positions.push((comment_match.start(), comment_match.end()));
-        }
-        
-        // Define the clean line variable
-        let line_after_tag_cleanup;
-        
-        if !comments.is_empty() {
-            // Line has comments - remove all other tags but preserve comments
-            let mut temp_line = final_line.clone();
-            
-            // Replace all non-comment tags
-            for tag_match in ANY_TAG_CLEANING_REGEX.find_iter(&final_line) {
-                // Check if this tag is part of a comment
-                let is_comment = comment_positions.iter()
-                    .any(|(start, end)| tag_match.start() >= *start && tag_match.end() <= *end);
-                
-                if !is_comment {
-                    // Replace with empty string if not a comment
-                    temp_line = temp_line.replace(tag_match.as_str(), "");
+                // Tag is removed; add its non-whitespace chars to buffer for comment decision
+                for char_in_tag in tag_content.chars() {
+                    if !char_in_tag.is_whitespace() {
+                        current_line_removed_chars_buffer.push(char_in_tag);
+                    }
                 }
             }
-            line_after_tag_cleanup = temp_line;
-        } else {
-            // No comments, remove all tags
-            line_after_tag_cleanup = ANY_TAG_CLEANING_REGEX.replace_all(&final_line, "").to_string();
+            last_pos = mat.end();
         }
-        
-        // Step 4: Add "text-missing" comment if needed
-        let total_chars_removed = total_glyph_chars_removed + total_unusual_chars_removed;
-        let clean_line = line_after_tag_cleanup.trim();
-        
-        if total_chars_removed >= 5 && !clean_line.is_empty() && !COMMENT_REGEX.is_match(clean_line) {
-            // Add missing text comment
-            result.push_str(clean_line);
-            result.push_str(" <!-- text-missing -->");
-            result.push('\n');
-        } else if total_chars_removed >= 5 && clean_line.is_empty() {
-            // Line is empty after cleaning, add standalone comment
-            result.push_str("<!-- text-missing -->");
-            result.push('\n');
-        } else {
-            // No significant removal or already has a comment
-            if !clean_line.is_empty() {
-                result.push_str(clean_line);
-                result.push('\n');
+        line_after_tag_handling.push_str(&line[last_pos..]);
+
+        // 2. Remove Glyph words from line_after_tag_handling
+        let mut line_after_glyph_removal = String::new();
+        last_pos = 0;
+        for mat in GLYPH_WORD_REGEX.find_iter(&line_after_tag_handling) {
+            line_after_glyph_removal.push_str(&line_after_tag_handling[last_pos..mat.start()]);
+            // Glyph word removed; add its non-whitespace chars to buffer
+            for char_in_glyph in mat.as_str().chars() {
+                if !char_in_glyph.is_whitespace() {
+                    current_line_removed_chars_buffer.push(char_in_glyph);
+                }
+            }
+            last_pos = mat.end();
+        }
+        line_after_glyph_removal.push_str(&line_after_tag_handling[last_pos..]);
+
+        // 3. Remove unusual characters not in allowed_chars from line_after_glyph_removal
+        for ch in line_after_glyph_removal.chars() {
+            if unusual_chars_set.contains(&ch) && !allowed_chars.contains(&ch) {
+                // Unusual char removed; add if non-whitespace to buffer
+                if !ch.is_whitespace() {
+                    current_line_removed_chars_buffer.push(ch);
+                }
+                // Do not push 'ch' to processed_line_segment
             } else {
-                // Empty line after cleaning but not from significant removal
-                result.push('\n');
+                processed_line_segment.push(ch);
             }
         }
+        
+        // Declare and assign here, its value is per-line.
+        let removed_chars_on_line_for_comment_decision = current_line_removed_chars_buffer.chars().count();
+
+        // 4. Comment Insertion Logic for the current line
+        if !processed_line_segment.trim().is_empty() {
+            // Line has content after cleaning
+            if removed_chars_on_line_for_comment_decision >= MIN_CHARS_FOR_COMMENT {
+                cleaned_output.push_str(processed_line_segment.trim_end());
+                cleaned_output.push(' ');
+                cleaned_output.push_str(TEXT_MISSING_COMMENT);
+            } else {
+                cleaned_output.push_str(&processed_line_segment);
+            }
+        } else {
+            // Line is empty or only whitespace after cleaning
+            if removed_chars_on_line_for_comment_decision >= MIN_CHARS_FOR_COMMENT && line.chars().any(|c| !c.is_whitespace()) {
+                // Original line had content, and enough was removed to empty it
+                cleaned_output.push_str(TEXT_MISSING_COMMENT);
+            } else {
+                // Original line was already empty/whitespace, or not enough removed to warrant comment on emptied line
+                cleaned_output.push_str(&processed_line_segment); // Append the (empty) processed line
+            }
+        }
+        cleaned_output.push('\n'); // Add newline after each processed line
     }
-    
-    Ok(result)
+
+    // Remove last newline if original text didn't have one and was not empty
+    if !text.is_empty() && text.ends_with('\n') {
+        cleaned_output
+    } else {
+        cleaned_output.trim_end_matches('\n').to_string()
+    }
 }
 
 #[pyfunction]
+#[pyo3(signature = (input_path, scripts_to_keep, output_path = None))]
 fn process_file(
     input_path: &str, 
-    output_path: Option<&str>,
-    scripts_to_keep: Vec<String>
+    scripts_to_keep: Vec<String>,
+    output_path: Option<&str>
 ) -> PyResult<HashMap<String, PyObject>> {
     // Read file content
     let content = match fs::read_to_string(input_path) {
@@ -427,6 +402,23 @@ fn process_file(
 }
 
 #[pyfunction]
+fn clean_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<String> {
+    // --- Build AllowedChars Set for this call --- (This part is specific to the PyO3 wrapper)
+    let mut current_allowed_chars = HashSet::new();
+    for script_key in &scripts_to_keep {
+        if let Some(script_set) = SCRIPT_SETS.get(script_key) {
+            current_allowed_chars.extend(script_set);
+        } else {
+            // Optionally, could return PyValueError::new_err here if strict script key checking is desired.
+            // For now, unknown keys are ignored, aligning with some existing behavior.
+        }
+    }
+    // Call the core internal logic
+    let result_string = _internal_core_clean_text_logic(text, &current_allowed_chars);
+    Ok(result_string)
+}
+
+#[pyfunction]
 fn list_available_scripts() -> PyResult<Vec<String>> {
     Ok(SCRIPT_SETS.keys()
         .filter(|&k| k != "unusual") // Don't expose the unusual set as keepable
@@ -434,11 +426,195 @@ fn list_available_scripts() -> PyResult<Vec<String>> {
         .collect())
 }
 
+#[pyfunction]
+fn process_directory_native(
+    py: Python,
+    input_dir_str: &str,
+    output_dir_str: &str,
+    scripts_to_keep: Vec<String>,
+    num_threads: usize,
+) -> PyResult<PyObject> {
+    let input_path = Path::new(input_dir_str);
+    let output_path = Path::new(output_dir_str);
+
+    // --- Validate input and output paths ---
+    if !input_path.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "Input path is not a directory: {}", input_dir_str
+        )));
+    }
+    if !output_path.exists() {
+        fs::create_dir_all(output_path).map_err(|e| {
+            PyValueError::new_err(format!(
+                "Failed to create output directory {}: {}", output_dir_str, e
+            ))
+        })?;
+    } else if !output_path.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "Output path exists but is not a directory: {}", output_dir_str
+        )));
+    }
+
+    // --- Collect markdown files ---
+    let md_files: Vec<PathBuf> = WalkDir::new(input_path)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "md"))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    if md_files.is_empty() {
+        let results = PyDict::new(py);
+        results.set_item("status", "success")?;
+        results.set_item("message", "No markdown files found in input directory.")?;
+        results.set_item("files_processed", 0)?;
+        return Ok(results.into());
+    }
+
+    // --- Prepare AllowedChars set (once) ---
+    let mut allowed_chars = HashSet::new();
+    for script_key in &scripts_to_keep {
+        if let Some(script_set) = SCRIPT_SETS.get(script_key) {
+            allowed_chars.extend(script_set);
+        }
+        // Optionally log unknown script keys if necessary
+    }
+    // Clone for use in parallel threads. Arc might be better if it's very large and construction is expensive.
+    let allowed_chars_arc = Arc::new(allowed_chars);
+    // let scripts_to_keep_arc = Arc::new(scripts_to_keep.clone()); // No longer needed
+
+    // --- Configure Rayon Thread Pool ---
+    let mut builder = ThreadPoolBuilder::new();
+    if num_threads > 0 {
+        builder = builder.num_threads(num_threads);
+    }
+    let pool = builder.build().map_err(|e| PyValueError::new_err(format!("Failed to build thread pool: {}", e)))?;
+
+    // --- Parallel Processing with Rayon ---
+    let files_processed_count = Arc::new(Mutex::new(0_usize));
+    let files_error_count = Arc::new(Mutex::new(0_usize));
+
+    pool.install(|| {
+        md_files.par_iter().for_each(|md_file_path| {
+            let local_allowed_chars = Arc::clone(&allowed_chars_arc);
+            // let local_scripts_to_keep = Arc::clone(&scripts_to_keep_arc); // No longer needed
+
+            match fs::read_to_string(md_file_path) {
+                Ok(content) => {
+                    // _internal_core_clean_text_logic now only takes content and allowed_chars
+                    let cleaned_content = _internal_core_clean_text_logic(&content, &local_allowed_chars);
+                    
+                    // Construct output path, preserving relative structure
+                    let relative_path = md_file_path.strip_prefix(input_path).unwrap_or(md_file_path);
+                    let target_file_path = output_path.join(relative_path);
+
+                    if let Some(parent_dir) = target_file_path.parent() {
+                        if !parent_dir.exists() {
+                            if let Err(_e) = fs::create_dir_all(parent_dir) {
+                                // Log error or increment error counter for this file
+                                *files_error_count.lock().unwrap() += 1;
+                                return;
+                            }
+                        }
+                    }
+
+                    match fs::write(&target_file_path, cleaned_content) {
+                        Ok(_) => {
+                            *files_processed_count.lock().unwrap() += 1;
+                        }
+                        Err(_e) => {
+                            // Log error or increment error counter for this file
+                            *files_error_count.lock().unwrap() += 1;
+                        }
+                    }
+                }
+                Err(_e) => {
+                    // Log error reading file or increment error counter
+                    *files_error_count.lock().unwrap() += 1;
+                }
+            }
+        });
+    });
+
+    let final_processed_count = *files_processed_count.lock().unwrap();
+    let final_error_count = *files_error_count.lock().unwrap();
+
+    let results = PyDict::new(py);
+    results.set_item("status", "success")?;
+    results.set_item("message", format!("Processed {} files. Errors on {} files.", final_processed_count, final_error_count))?;
+    results.set_item("files_processed", final_processed_count)?;
+    results.set_item("files_with_errors", final_error_count)?;
+    results.set_item("total_files_found", md_files.len())?;
+    Ok(results.into())
+}
+
+// --- Malformed Table Detection --- //
+
+#[pyclass]
+#[derive(Debug, Clone)]
+struct TableIssue {
+    #[pyo3(get)]
+    line_number: usize,
+    #[pyo3(get)]
+    description: String,
+    #[pyo3(get)]
+    expected_columns: Option<usize>,
+    #[pyo3(get)]
+    found_columns: Option<usize>,
+}
+
+#[pymethods]
+impl TableIssue {
+    #[new]
+    fn new(line_number: usize, description: String, expected_columns: Option<usize>, found_columns: Option<usize>) -> Self {
+        TableIssue { line_number, description, expected_columns, found_columns }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "TableIssue(line: {}, desc: '{}', expected: {:?}, found: {:?})",
+            self.line_number,
+            self.description,
+            self.expected_columns,
+            self.found_columns
+        )
+    }
+}
+
+#[pyfunction]
+fn detect_malformed_tables(_py: Python, markdown_text: &str) -> PyResult<Vec<Py<TableIssue>>> {
+    let mut issues: Vec<Py<TableIssue>> = Vec::new();
+    let lines: Vec<&str> = markdown_text.lines().collect();
+
+    // Placeholder for logic to iterate through lines, identify tables,
+    // and detect malformations.
+    // For now, let's add a dummy issue if we see a line that looks like a table separator
+    // just to test the structure.
+    for (i, line) in lines.iter().enumerate() {
+        if line.contains("|---") || line.contains("|------") {
+            // This is a very naive check, just for demonstration
+            let issue = Py::new(_py, TableIssue::new(
+                i + 1, // 1-based line number
+                "Potential table separator found (naive check)".to_string(),
+                None,
+                None
+            ))?;
+            issues.push(issue);
+        }
+    }
+
+    Ok(issues)
+}
+
+/// A Python module implemented in Rust.
 #[pymodule]
 fn text_cleaner_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_text, m)?)?;
     m.add_function(wrap_pyfunction!(clean_text, m)?)?;
     m.add_function(wrap_pyfunction!(process_file, m)?)?;
     m.add_function(wrap_pyfunction!(list_available_scripts, m)?)?;
+    m.add_function(wrap_pyfunction!(process_directory_native, m)?)?;
+    m.add_function(wrap_pyfunction!(detect_malformed_tables, m)?)?;
+    m.add_class::<TableIssue>()?;
     Ok(())
 }
