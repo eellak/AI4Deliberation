@@ -16,7 +16,7 @@ from text_cleaner import TextCleaner
 def main():
     # Define paths
     input_dir = "/mnt/data/gazette_processing/markdown"
-    output_dir = "/mnt/data/AI4Deliberation/ΦΕΚ/nomoi/check_badness/extraction_metrics_rs/cleaned_markdown"
+    output_dir = "/mnt/data/AI4Deliberation/ΦΕΚ/nomoi/check_badness/sample_cleaned_markdown_v2"
     results_csv = "/mnt/data/AI4Deliberation/ΦΕΚ/nomoi/check_badness/extraction_metrics_rs/analysis_results.csv"
     
     # Make sure output directory exists
