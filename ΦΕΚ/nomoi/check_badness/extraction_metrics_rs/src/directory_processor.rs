@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
 use csv::Writer;
+use serde::Serialize;
 
 use crate::table_analysis_module;
 use crate::cleaning_module;
@@ -57,7 +58,7 @@ where
     println!("DEBUG: Collecting markdown files from: {}", input_path.display());
     let md_files: Vec<PathBuf> = WalkDir::new(input_path)
         .into_iter().filter_map(Result::ok)
-        .filter(|e| e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "md"))
+        .filter(|e| e.path().is_file() && e.path().extension().is_some_and(|ext| ext == "md"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
@@ -221,6 +222,22 @@ struct TableAnalysisConfig {
     // Empty configuration as we don't need special settings for table analysis
 }
 
+#[derive(Debug, Serialize)]
+struct FileReportData {
+    file_name: String,
+    original_chars: usize,
+    cleaned_chars: usize,
+    removed_chars_total: usize,
+    badness_score_non_ws: Option<f64>,
+    badness_score_all_chars: Option<f64>,
+    greek_chars_cleaned: Option<usize>,
+    latin_chars_cleaned: Option<usize>,
+    percentage_greek_cleaned: Option<f64>,
+    percentage_latin_cleaned: Option<f64>,
+    cleaned_non_whitespace_chars: Option<usize>,
+    error_message: Option<String>,
+}
+
 #[pyfunction]
 #[pyo3(signature = (input_dir_str, output_csv_path_str, output_dir_cleaned_files_str, scripts_to_analyze, num_threads))]
 pub fn generate_analysis_report_for_directory(
@@ -251,7 +268,7 @@ pub fn generate_analysis_report_for_directory(
     
     let md_files: Vec<PathBuf> = WalkDir::new(input_path)
         .into_iter().filter_map(Result::ok)
-        .filter(|e| e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "md"))
+        .filter(|e| e.path().is_file() && e.path().extension().is_some_and(|ext| ext == "md"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
@@ -260,7 +277,7 @@ pub fn generate_analysis_report_for_directory(
         // Create CSV with only headers if no files found
         let mut wtr = Writer::from_path(output_csv_path)
             .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
-        wtr.write_record(&["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
+        wtr.write_record(["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
             .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
         wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer: {}", e)))?;
         return Ok(());
@@ -305,18 +322,9 @@ pub fn generate_analysis_report_for_directory(
     // The `scripts_to_analyze` argument to *this* function (`generate_analysis_report_for_directory`)
     // is primarily for constructing `allowed_chars_arc`.
     // The `perform_text_analysis` will try to populate greek/latin counts if `calculate_specific_counts` is true,
-    // irrespective of what's in its `_scripts_for_percentage_and_specific_counts` argument, because
-    // `SlimTextAnalysisResult` has dedicated fields for them.
-    // However, to be clean, let's define the scripts we are interested in for counting for perform_text_analysis.
-    // It's a bit confusing as `perform_text_analysis` has `_scripts_for_percentage_and_specific_counts`
-    // but `SlimTextAnalysisResult` has hardcoded optional fields for Greek/Latin.
-    // Let's assume `perform_text_analysis` uses `_scripts_for_percentage_and_specific_counts` to decide
-    // *which* of several possible script counts to calculate if it were more generic.
-    // For now, as per `SlimTextAnalysisResult`, only Greek and Latin are explicitly handled.
-    // We will pass the specific strings "greek" and "latin" to `perform_text_analysis`.
-    let scripts_for_perform_analysis_arc = Arc::new(vec!["greek".to_string(), "latin".to_string()]);
+    // The `scripts_to_analyze` parameter of `perform_text_analysis` is used to decide which scripts to count.
+    // let scripts_for_perform_analysis_arc = Arc::new(vec!["greek".to_string(), "latin".to_string()]); // This is unused and can be removed
 
-    // Re-introduce input_path_arc here
     let input_path_arc = Arc::new(input_path.to_path_buf()); 
     let output_cleaned_path_arc = Arc::new(output_dir_cleaned_files_str.map(PathBuf::from));
 
@@ -324,15 +332,16 @@ pub fn generate_analysis_report_for_directory(
     let analysis_phase_start = std::time::Instant::now();
 
     // Results for CSV will be collected from parallel tasks.
-    let collected_analysis_results: Vec<(String, f64, f64, f64)> = py.allow_threads(|| {
+    let collected_report_data: Vec<FileReportData> = py.allow_threads(|| {
         pool.install(|| {
             md_files
                 .par_iter()
                 .filter_map(|md_file_path| {
                     let allowed_chars_thread = Arc::clone(&allowed_chars_arc);
                     let unusual_chars_thread = Arc::clone(&unusual_chars_arc);
-                    let scripts_for_counts_thread = Arc::clone(&scripts_for_perform_analysis_arc);
-                    let local_input_path_arc = Arc::clone(&input_path_arc);
+                    let scripts_for_analysis_ref: &[String] = &scripts_to_analyze; 
+
+                    let local_input_path_arc = Arc::clone(&input_path_arc); 
                     let local_output_cleaned_path_arc = Arc::clone(&output_cleaned_path_arc);
 
                     match fs::read_to_string(md_file_path) {
@@ -341,9 +350,32 @@ pub fn generate_analysis_report_for_directory(
                                 &content,
                                 &allowed_chars_thread,
                                 &unusual_chars_thread,
-                                &scripts_for_counts_thread,
-                                true, 
+                                scripts_for_analysis_ref,
+                                true,
+                                None  // min_chars_for_comment (use default in core_clean_text)
                             );
+
+                            let removed_total_chars = analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars);
+
+                            let mut percentage_greek_cleaned = None;
+                            if let Some(count) = analysis_result.greek_char_count_after_clean {
+                                let cleaned_non_whitespace_after_clean = analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0);
+                                if cleaned_non_whitespace_after_clean > 0 && count > 0 { // Calculate percentage only if both are positive
+                                    percentage_greek_cleaned = Some(count as f64 / cleaned_non_whitespace_after_clean as f64 * 100.0);
+                                } else { // Otherwise, it's 0%
+                                    percentage_greek_cleaned = Some(0.0);
+                                }
+                            } // If count is None, percentage_greek_cleaned remains None
+
+                            let mut percentage_latin_cleaned = None;
+                            if let Some(count) = analysis_result.latin_char_count_after_clean {
+                                let cleaned_non_whitespace_after_clean = analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0);
+                                if cleaned_non_whitespace_after_clean > 0 && count > 0 { // Calculate percentage only if both are positive
+                                    percentage_latin_cleaned = Some(count as f64 / cleaned_non_whitespace_after_clean as f64 * 100.0);
+                                } else { // Otherwise, it's 0%
+                                    percentage_latin_cleaned = Some(0.0);
+                                }
+                            } // If count is None, percentage_latin_cleaned remains None
 
                             // Optionally save cleaned file
                             if let Some(output_base_path) = &*local_output_cleaned_path_arc {
@@ -352,61 +384,68 @@ pub fn generate_analysis_report_for_directory(
                                 
                                 if let Some(parent_dir) = target_file_path.parent() {
                                     if !parent_dir.exists() {
-                                        // This error should ideally be collected or handled more robustly
-                                        if fs::create_dir_all(parent_dir).is_err() {
-                                            eprintln!("ERROR: Failed to create directory for cleaned file: {}", parent_dir.display());
-                                            // Decide if we should skip this file or error out
+                                        if let Err(e) = fs::create_dir_all(parent_dir) {
+                                            return Some(FileReportData {
+                                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                                                original_chars: analysis_result.original_total_chars,
+                                                cleaned_chars: analysis_result.cleaned_total_chars,
+                                                removed_chars_total: removed_total_chars,
+                                                badness_score_non_ws: analysis_result.badness_score_non_ws,
+                                                badness_score_all_chars: analysis_result.badness_score_all_chars,
+                                                greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
+                                                latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
+                                                percentage_greek_cleaned,
+                                                percentage_latin_cleaned,
+                                                cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
+                                                error_message: Some(format!("Failed to create output dir {}: {}", parent_dir.display(), e)),
+                                            });
                                         }
                                     }
                                 }
                                 
-                                if fs::write(&target_file_path, &analysis_result.cleaned_text_content).is_err() {
-                                    eprintln!("ERROR: Failed to write cleaned file: {}", target_file_path.display());
-                                    // Decide if we should skip this file or error out
+                                if let Err(e) = fs::write(&target_file_path, &analysis_result.cleaned_text_content) {
+                                    return Some(FileReportData {
+                                        file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                                        original_chars: analysis_result.original_total_chars,
+                                        cleaned_chars: analysis_result.cleaned_total_chars,
+                                        removed_chars_total: removed_total_chars,
+                                        badness_score_non_ws: analysis_result.badness_score_non_ws,
+                                        badness_score_all_chars: analysis_result.badness_score_all_chars,
+                                        greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
+                                        latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
+                                        percentage_greek_cleaned,
+                                        percentage_latin_cleaned,
+                                        cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
+                                        error_message: Some(format!("Failed to write cleaned file {}: {}", target_file_path.display(), e)),
+                                    });
                                 }
                             }
 
-                            let badness_score_to_collect = if analysis_result.original_total_chars > 0 {
-                                (analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars)) as f64 
-                                    / analysis_result.original_total_chars as f64
-                            } else {
-                                0.0 
-                            };
-
-                            // Greek and Latin percentages will be 0.0 as Gk/Lat counting is currently off in cleaning_module.rs
-                            // let greek_percentage_to_collect = 0.0; 
-                            // let latin_percentage_to_collect = 0.0;
-                            
-                            let original_nw_chars_for_calc = analysis_result.original_non_whitespace_chars.unwrap_or(0);
-
-                            let greek_percentage_to_collect = if original_nw_chars_for_calc > 0 {
-                                (analysis_result.greek_char_count.unwrap_or(0) as f64 / original_nw_chars_for_calc as f64) * 100.0
-                            } else {
-                                0.0
-                            };
-
-                            let latin_percentage_to_collect = if original_nw_chars_for_calc > 0 {
-                                (analysis_result.latin_char_count.unwrap_or(0) as f64 / original_nw_chars_for_calc as f64) * 100.0
-                            } else {
-                                0.0
-                            };
-                            
-                            let relative_path_str = md_file_path
-                                .strip_prefix(&*local_input_path_arc) 
-                                .unwrap_or(md_file_path)
-                                .to_string_lossy()
-                                .into_owned();
-
-                            Some((
-                                relative_path_str,
-                                badness_score_to_collect,    // This is 0.0
-                                greek_percentage_to_collect, // This is 0.0
-                                latin_percentage_to_collect, // This is 0.0
-                            ))
+                            Some(FileReportData {
+                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                                original_chars: analysis_result.original_total_chars,
+                                cleaned_chars: analysis_result.cleaned_total_chars,
+                                removed_chars_total: removed_total_chars,
+                                badness_score_non_ws: analysis_result.badness_score_non_ws,
+                                badness_score_all_chars: analysis_result.badness_score_all_chars,
+                                greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
+                                latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
+                                percentage_greek_cleaned,
+                                percentage_latin_cleaned,
+                                cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
+                                error_message: None,
+                            })
                         }
-                        Err(_err) => {
-                             eprintln!("ERROR: Failed to read file {}: {:?}", md_file_path.display(), _err);
-                            None 
+                        Err(e) => {
+                            // Error reading the file
+                            Some(FileReportData {
+                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                                original_chars: 0, cleaned_chars: 0, removed_chars_total: 0, badness_score_non_ws: Some(0.0), badness_score_all_chars: Some(0.0),
+                                greek_chars_cleaned: None, latin_chars_cleaned: None, 
+                                percentage_greek_cleaned: None, percentage_latin_cleaned: None,
+                                cleaned_non_whitespace_chars: None,
+                                error_message: Some(format!("Failed to read file {}: {}", md_file_path.display(), e)),
+                            })
                         }
                     }
                 })
@@ -428,20 +467,29 @@ pub fn generate_analysis_report_for_directory(
     let mut wtr = Writer::from_path(output_csv_path)
         .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
     
-    wtr.write_record(&["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
-        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
+    // Updated CSV header
+    wtr.write_record([
+        "File Name", 
+        "Badness",
+        "Greek Percentage", 
+        "Latin Percentage",
+    ]).map_err(|e| PyValueError::new_err(format!("CSV header write error: {}", e)))?; 
 
-    for (path, score, greek_p, latin_p) in collected_analysis_results.iter() {
-        wtr.write_record(&[
-            path,
-            &format!("{:.3}", score),     // Will be formatted as "0.000"
-            &format!("{:.3}", greek_p),   // Will be formatted as "0.000"
-            &format!("{:.3}", latin_p),   // Will be formatted as "0.000"
-        ])
-        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV record for {}: {}", path, e)))?;
+    let mut sorted_report_data = collected_report_data;
+    sorted_report_data.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+
+    for report_item in &sorted_report_data {
+        let file_name_for_error_log = report_item.file_name.clone();
+        // Updated CSV row writing
+        wtr.write_record([
+            report_item.file_name.clone(),
+            report_item.badness_score_all_chars.map_or_else(|| "N/A".to_string(), |v| format!("{:.4}", v)),
+            report_item.percentage_greek_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
+            report_item.percentage_latin_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
+        ]).map_err(|e| PyValueError::new_err(format!("CSV row write error for {}: {}", file_name_for_error_log, e)))?;
     }
 
-    wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer: {}", e)))?;
+    wtr.flush().map_err(|e| PyValueError::new_err(format!("CSV flush error: {}", e)))?;
     
     let csv_writing_duration = csv_writing_start.elapsed();
     println!("CSV writing phase completed in: {:.2?}", csv_writing_duration);
@@ -449,14 +497,14 @@ pub fn generate_analysis_report_for_directory(
     println!("CSV writing phase was SKIPPED for this test.");
     */
 
-    let files_processed_count = collected_analysis_results.len();
-    let files_error_count = md_files.len() - files_processed_count; // Files that failed to read
+    let files_processed_count = sorted_report_data.len();
+    let files_that_had_read_errors_or_processing_errors = md_files.len().saturating_sub(files_processed_count);
 
     println!(
         "CSV report generated at: {}. Processed: {}, Errors reading files: {}",
         output_csv_path_str,
         files_processed_count,
-        files_error_count
+        files_that_had_read_errors_or_processing_errors
     );
 
     Ok(())
@@ -532,15 +580,15 @@ pub fn batch_clean_markdown_files(
     let clean_file_op = |_py_thread: Python, content: &str, op_conf: &Arc<BatchCleanOpConfig>| {
         println!("DEBUG: Processing file with {} characters", content.len());
         
-        // Use op_conf parameters consistently
-        let cleaned_content = cleaning_module::core_clean_text(
+        let cleaned_content_tuple = cleaning_module::core_clean_text(
             content, 
             &op_conf.allowed_chars, 
-            &op_conf.unusual_chars
+            &op_conf.unusual_chars,
+            None // Add missing 4th argument: min_chars_for_comment_override
         );
         
-        println!("DEBUG: Cleaned content has {} characters", cleaned_content.len());
-        Ok(PerFileOperationOutput::Content(cleaned_content))
+        println!("DEBUG: Cleaned content has {} characters", cleaned_content_tuple.0.len());
+        Ok(PerFileOperationOutput::Content(cleaned_content_tuple.0))
     };
 
     // Process the directory

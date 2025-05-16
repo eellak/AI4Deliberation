@@ -1,30 +1,30 @@
 use lazy_static::lazy_static;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use once_cell::sync::Lazy;
 use serde::Serialize;
+use aho_corasick::AhoCorasick;
+use htmlentity::entity::{decode, ICodedDataTrait};
+use memchr::{memchr}; // For Step 5.1
+use memchr::memmem; // For optimizing comment search in strip_tags_custom
 
 // Constants
 const TEXT_MISSING_COMMENT: &str = "<!-- text-missing -->";
 
 lazy_static! {
-    // Regular expressions for detection (compiled once)
-    pub static ref GLYPH_TAG_REGEX_RAW: Regex = Regex::new(r"(?:^|\s)glyph<c=\d+,font=/[^>]+>(?:\s|$)").unwrap();
-    pub static ref GLYPH_TAG_REGEX_HTML: Regex = Regex::new(r"(?:^|\s)glyph&lt;c=\d+,font=/[^>]+&gt;(?:\s|$)").unwrap();
-    pub static ref ANY_TAG_REGEX: Regex = Regex::new(r"(?:^|\s)<[^>]*>(?:\s|$)").unwrap();
-    pub static ref IS_COMMENT_REGEX: Regex = Regex::new(r"^<!--").unwrap();
-    pub static ref HTML_ENTITY_REGEX: Regex = Regex::new(r"&[a-zA-Z]+;|&#\d+;|&lt;|&gt;|&amp;").unwrap();
+    // Regular expressions for detection (compiled once) - Most are now unused
+    // pub static ref GLYPH_TAG_REGEX_RAW: Regex = Regex::new(r"(?:^|\s)glyph<c=\d+,font=/[^>]+>(?:\s|$)").unwrap();
+    // pub static ref GLYPH_TAG_REGEX_HTML: Regex = Regex::new(r"(?:^|\s)glyph&lt;c=\d+,font=/[^>]+&gt;(?:\s|$)").unwrap();
+    // pub static ref ANY_TAG_REGEX: Regex = Regex::new(r"(?:^|\s)<[^>]*>(?:\s|$)").unwrap();
+    // pub static ref IS_COMMENT_REGEX: Regex = Regex::new(r"^<!--").unwrap(); // Replaced by direct byte check
+    // pub static ref HTML_ENTITY_REGEX: Regex = Regex::new(r"&[a-zA-Z]+;|&#\d+;|&lt;|&gt;|&amp;").unwrap(); // Replaced by htmlentity crate
     
-    // Regex for cleaning - detect any word containing "glyph"
-    pub static ref GLYPH_WORD_REGEX: Regex = Regex::new(r"\S*glyph\S*").unwrap();
-    
-    // Regex for HTML comments (captures the whole comment)
+    // Regex for HTML comments (captures the whole comment) - STILL USED
     pub static ref COMMENT_REGEX: Regex = Regex::new(r"<!--.*?-->").unwrap();
     
-    // Regex for HTML/XML tags (for cleaning, non-comment tags)
-    pub static ref ANY_TAG_CLEANING_REGEX: Regex = Regex::new(r"<[^>]*>").unwrap();
+    // Regex for HTML/XML tags (for cleaning, non-comment tags) - Replaced by strip_tags_custom
+    // pub static ref ANY_TAG_CLEANING_REGEX: Regex = Regex::new(r"<[^>]*>").unwrap();
 
     // Central HashMap for character scripts
     pub static ref SCRIPT_SETS: HashMap<String, HashSet<char>> = {
@@ -84,100 +84,215 @@ lazy_static! {
     };
 }
 
-// Regex for the new font-based line removal
-static FONT_LINE_REMOVAL_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"MS-Bold-\d+&gt;").unwrap() // As per user example
+// Artefact triggers for Aho-Corasick (Step 2.1)
+static BAD_LINE_AC: Lazy<AhoCorasick> = Lazy::new(|| {
+    AhoCorasick::new([
+        "glyph<c=", 
+        "glyph&lt;c=", 
+        "MS-Bold-", 
+        "font=/",       // Common in Docling XML-like font tags e.g. <glyph font=/NUMPTY+ImprintMTnum>1</glyph>
+        "FontName="    // Common in some other PDF text extractions for font changes
+    ]).unwrap()
 });
 
+// Helper function for Step 5.1: Stream-strip tags using memchr
+// Takes a mutable buffer for the result, clears it, and appends to it.
+// Returns count of removed non-whitespace tag characters.
+fn strip_tags_custom(line: &str, result_buf: &mut String) -> usize {
+    result_buf.clear();
+    result_buf.reserve(line.len()); // Pre-reserve capacity
+    let mut removed_non_ws_tag_chars = 0;
+    let mut current_pos = 0;
+    let bytes = line.as_bytes();
+    let comment_closer = memmem::Finder::new(b"-->"); // Create finder for "-->"
+
+    while current_pos < bytes.len() {
+        match memchr(b'<', &bytes[current_pos..]) {
+            Some(i) => {
+                result_buf.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[current_pos..current_pos + i]) });
+                current_pos += i;
+                if bytes.get(current_pos..current_pos + 4) == Some(b"<!--") {
+                    let search_start_for_comment_end = current_pos + 4;
+                    // Use memmem::find for faster "-->" search
+                    match comment_closer.find(&bytes[search_start_for_comment_end..]) {
+                        Some(j) => { // j is the start index of "-->" within the slice
+                            let comment_end_in_slice = search_start_for_comment_end + j + 3; // end of "-->"
+                            result_buf.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[current_pos..comment_end_in_slice]) });
+                            current_pos = comment_end_in_slice;
+                        }
+                        None => { 
+                            result_buf.push('<');
+                            current_pos += 1;
+                        }
+                    }
+                } else { 
+                    match memchr(b'>', &bytes[current_pos..]) {
+                        Some(j) => {
+                            let tag_content_bytes = &bytes[current_pos + 1..current_pos + j];
+                            let tag_content_str = unsafe { std::str::from_utf8_unchecked(tag_content_bytes) };
+                            for _char_in_tag in tag_content_str.chars().filter(|c| !c.is_whitespace()) {
+                                removed_non_ws_tag_chars += 1;
+                            }
+                            current_pos += j + 1;
+                        }
+                        None => { 
+                            result_buf.push('<');
+                            current_pos += 1;
+                        }
+                    }
+                }
+            }
+            None => { 
+                result_buf.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[current_pos..]) });
+                current_pos = bytes.len();
+            }
+        }
+    }
+    removed_non_ws_tag_chars // No longer returns the String, it's modified in place
+}
+
 /// Core text cleaning function - removes unwanted characters based on script sets
-pub fn core_clean_text(text: &str, allowed_chars: &HashSet<char>, unusual_chars_set: &HashSet<char>) -> String {
-    const MIN_CHARS_FOR_COMMENT: usize = 5; 
+/// Returns a tuple: (cleaned_text, original_chars_count_for_badness, kept_chars_count_for_badness)
+/// original_chars_count_for_badness: count of characters in lines not fully rejected by BAD_LINE_AC.
+/// kept_chars_count_for_badness: count of characters remaining in those lines after cleaning.
+pub fn core_clean_text(text: &str, allowed_chars: &HashSet<char>, unusual_chars_set: &HashSet<char>, min_chars_for_comment_override: Option<usize>) -> (String, usize, usize) {
+    let min_comment_chars = min_chars_for_comment_override.unwrap_or(5);
     let mut cleaned_output = String::new();
+    let mut original_chars_for_badness: usize = 0;
+    let mut kept_chars_for_badness: usize = 0;
+
+    // Step 5.3: Build local bitmaps for faster char checking in the 0-1023 range.
+    let mut local_allowed_bitmap: [bool; 1024] = [false; 1024];
+    for &ch_allowed in allowed_chars {
+        let u_val = ch_allowed as u32;
+        if u_val < 1024 {
+            local_allowed_bitmap[u_val as usize] = true;
+        }
+    }
+
+    let mut local_unusual_bitmap: [bool; 1024] = [false; 1024];
+    for &ch_unusual in unusual_chars_set {
+        let u_val = ch_unusual as u32;
+        if u_val < 1024 {
+            local_unusual_bitmap[u_val as usize] = true;
+        }
+    }
+
+    // Step 5.4: Define line-level buffers outside the loop to reuse them
+    let mut processed_line_segment_buf = String::new();
+    let mut current_line_removed_chars_buffer_buf = String::new();
+    let mut line_after_tag_handling_buf = String::new(); // Buffer for strip_tags_custom output
 
     for line in text.lines() {
-        // Apply font-based line removal first
-        if line.contains("MS-Bold-") && FONT_LINE_REMOVAL_REGEX.is_match(line) {
+        // Step 2.2: Early-reject lines based on BAD_LINE_AC (Moved back to the top of the loop)
+        if BAD_LINE_AC.is_match(line) {
             cleaned_output.push_str(TEXT_MISSING_COMMENT);
             cleaned_output.push('\n');
-            continue; // Move to the next line
+            // Do not add to original_chars_for_badness or kept_chars_for_badness for these rejected lines
+            continue; 
         }
 
-        let mut processed_line_segment = String::new(); 
-        let mut current_line_removed_chars_buffer = String::new(); 
+        original_chars_for_badness += line.chars().count();
 
-        // 1. Tag Handling
-        let mut line_after_tag_handling = String::new();
-        let mut last_pos = 0;
-        for mat in ANY_TAG_CLEANING_REGEX.find_iter(line) {
-            line_after_tag_handling.push_str(&line[last_pos..mat.start()]);
-            let tag_content = mat.as_str();
-            // Use the COMMENT_REGEX from lazy_static which captures full HTML comments
-            if COMMENT_REGEX.is_match(tag_content) {
-                line_after_tag_handling.push_str(tag_content); 
+        processed_line_segment_buf.clear();
+        current_line_removed_chars_buffer_buf.clear();
+        // line_after_tag_handling_buf is cleared inside strip_tags_custom
+
+        // Step 4.1: Decode HTML entities FIRST from the original line
+        let decoded_entity_data = decode(line.as_bytes());
+        let line_after_entity_decoding_str = decoded_entity_data.to_string().unwrap_or_else(|_| line.to_string());
+
+        // Step 5.1 & 5.4: Use strip_tags_custom with a reusable buffer on the DECODED line content
+        let removed_from_tags_count = strip_tags_custom(&line_after_entity_decoding_str, &mut line_after_tag_handling_buf);
+
+        // The result of tag stripping (line_after_tag_handling_buf) is now what we iterate for character filtering.
+        for ch in line_after_tag_handling_buf.chars() { // Iterate the result of tag stripping
+            let ch_u32 = ch as u32;
+            let is_char_allowed_by_scripts; 
+            let is_char_in_unusual_set;
+
+            if ch_u32 < 1024 {
+                is_char_allowed_by_scripts = local_allowed_bitmap[ch_u32 as usize];
+                is_char_in_unusual_set = local_unusual_bitmap[ch_u32 as usize];
             } else {
-                for char_in_tag in tag_content.chars().filter(|c| !c.is_whitespace()) {
-                        current_line_removed_chars_buffer.push(char_in_tag);
-                }
+                is_char_allowed_by_scripts = allowed_chars.contains(&ch);
+                is_char_in_unusual_set = unusual_chars_set.contains(&ch);
             }
-            last_pos = mat.end();
-        }
-        line_after_tag_handling.push_str(&line[last_pos..]);
 
-        // 2. Glyph Word Removal
-        let mut line_after_glyph_removal = String::new();
-        last_pos = 0;
-        for mat in GLYPH_WORD_REGEX.find_iter(&line_after_tag_handling) {
-            line_after_glyph_removal.push_str(&line_after_tag_handling[last_pos..mat.start()]);
-            for char_in_glyph in mat.as_str().chars().filter(|c| !c.is_whitespace()) {
-                    current_line_removed_chars_buffer.push(char_in_glyph);
-            }
-            last_pos = mat.end();
-        }
-        line_after_glyph_removal.push_str(&line_after_tag_handling[last_pos..]);
-
-        // 3. Unusual Character Removal
-        for ch in line_after_glyph_removal.chars() {
-            if unusual_chars_set.contains(&ch) && !allowed_chars.contains(&ch) {
+            // Condition for removal: It's in the unusual set AND it's NOT specifically allowed by current scripts_to_keep.
+            if is_char_in_unusual_set && !is_char_allowed_by_scripts {
                 if !ch.is_whitespace() {
-                    current_line_removed_chars_buffer.push(ch);
+                    current_line_removed_chars_buffer_buf.push(ch);
                 }
             } else {
-                processed_line_segment.push(ch);
+                processed_line_segment_buf.push(ch);
             }
         }
         
-        let removed_chars_on_line_for_comment_decision = current_line_removed_chars_buffer.chars().count();
+        let removed_chars_on_line_for_comment_decision = removed_from_tags_count + current_line_removed_chars_buffer_buf.chars().count();
 
-        // 4. Comment Insertion Logic
-        if !processed_line_segment.trim().is_empty() {
-            if removed_chars_on_line_for_comment_decision >= MIN_CHARS_FOR_COMMENT {
-                cleaned_output.push_str(processed_line_segment.trim_end());
-                cleaned_output.push(' ');
-                cleaned_output.push_str(TEXT_MISSING_COMMENT);
+        let trimmed_segment_for_comment_check = processed_line_segment_buf.trim();
+        let mut line_content_to_add = String::new();
+
+        // Check if the line (after processing up to character filtering) is exclusively an HTML comment.
+        let is_exclusively_comment = if !trimmed_segment_for_comment_check.is_empty() && COMMENT_REGEX.is_match(trimmed_segment_for_comment_check) {
+            if let Some(mat) = COMMENT_REGEX.find(trimmed_segment_for_comment_check) {
+                mat.start() == 0 && mat.end() == trimmed_segment_for_comment_check.len()
             } else {
-                cleaned_output.push_str(&processed_line_segment);
+                false
             }
         } else {
-            if removed_chars_on_line_for_comment_decision >= MIN_CHARS_FOR_COMMENT 
-               && line.chars().any(|c| !c.is_whitespace()) {
-                cleaned_output.push_str(TEXT_MISSING_COMMENT);
+            false
+        };
+
+        if is_exclusively_comment {
+            // If the line is exclusively a comment, add it as is (respecting original whitespace as much as preserved by processed_line_segment_buf).
+            line_content_to_add.push_str(&processed_line_segment_buf);
+        } else {
+            // Original logic for TEXT_MISSING_COMMENT insertion for non-comment-only lines
+            if !processed_line_segment_buf.trim().is_empty() {
+                if removed_chars_on_line_for_comment_decision >= min_comment_chars {
+                    line_content_to_add.push_str(processed_line_segment_buf.trim_end());
+                    line_content_to_add.push(' ');
+                    line_content_to_add.push_str(TEXT_MISSING_COMMENT);
+                } else {
+                    line_content_to_add.push_str(&processed_line_segment_buf);
+                }
             } else {
-                cleaned_output.push_str(&processed_line_segment); 
+                // processed_line_segment_buf is empty or whitespace only
+                if removed_chars_on_line_for_comment_decision >= min_comment_chars 
+                   && line.chars().any(|c| !c.is_whitespace()) { // original line had content
+                    line_content_to_add.push_str(TEXT_MISSING_COMMENT);
+                } else {
+                    // Preserve the (likely empty or all-whitespace) processed_line_segment_buf
+                    line_content_to_add.push_str(&processed_line_segment_buf); 
+                }
             }
         }
+        
+        cleaned_output.push_str(&line_content_to_add);
+        kept_chars_for_badness += line_content_to_add.chars().count();
+
         cleaned_output.push('\n'); 
+        kept_chars_for_badness += 1; 
     }
 
-    if !text.is_empty() && text.ends_with('\n') {
+    let final_cleaned_text = if !text.is_empty() && text.ends_with('\n') {
         cleaned_output
     } else {
-        cleaned_output.trim_end_matches('\n').to_string()
-    }
+        // If original text didn't end with newline, and we added one, remove it from both text and count
+        if cleaned_output.ends_with('\n') && kept_chars_for_badness > 0 { // ensure count isn't decremented if empty
+            kept_chars_for_badness -= 1;
+            cleaned_output.pop();
+        }
+        cleaned_output
+    };
+    (final_cleaned_text, original_chars_for_badness, kept_chars_for_badness)
 }
 
 /// Python-exposed function to clean a single string
 #[pyfunction]
-pub fn clean_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<String> {
+pub fn clean_text(text: &str, scripts_to_keep: Vec<String>, min_chars_for_comment: Option<usize>) -> PyResult<String> {
     let mut allowed_chars = HashSet::new();
     for key in &scripts_to_keep {
         if let Some(script_set) = SCRIPT_SETS.get(key) {
@@ -205,7 +320,8 @@ pub fn clean_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<String> 
     allowed_chars.insert('\n'); // Though lines are processed and newlines re-added, having it in allowed_chars is safe.
 
     let unusual_chars = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
-    Ok(core_clean_text(text, &allowed_chars, &unusual_chars))
+    let (cleaned_string, _, _) = core_clean_text(text, &allowed_chars, &unusual_chars, min_chars_for_comment);
+    Ok(cleaned_string)
 }
 
 // Helper function for script percentage calculation (moved from analyze_text for clarity)
@@ -237,14 +353,17 @@ fn calc_script_percentages(py: Python, text: &str, scripts_to_keep: &[String]) -
 */
 
 // Define the SLIMMED DOWN struct to hold only essential analysis results for CSV
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Serialize)]
 pub struct SlimTextAnalysisResult {
     pub original_total_chars: usize,
     pub cleaned_total_chars: usize,
-    pub original_non_whitespace_chars: Option<usize>, // Needed for percentages
-    pub greek_char_count: Option<usize>,
-    pub latin_char_count: Option<usize>,
-    pub cleaned_text_content: String, // Added field
+    pub original_non_whitespace_chars: Option<usize>,
+    pub greek_char_count_after_clean: Option<usize>,
+    pub latin_char_count_after_clean: Option<usize>,
+    pub cleaned_non_whitespace_chars_after_clean: Option<usize>,
+    pub cleaned_text_content: String,
+    pub badness_score_all_chars: Option<f64>,    // New score based on all chars in processed lines
+    pub badness_score_non_ws: Option<f64>,       // Existing badness score, now explicitly named
 }
 
 // Internal function to perform text analysis and return the SLIMMED DOWN struct
@@ -252,65 +371,75 @@ pub fn perform_text_analysis(
     text: &str, 
     allowed_chars_ref: &HashSet<char>,
     unusual_chars_ref: &HashSet<char>,
-    _scripts_for_percentage_and_specific_counts: &[String], 
-    calculate_specific_counts: bool 
+    scripts_for_percentage_and_specific_counts: &[String], 
+    calculate_specific_counts: bool,
+    min_chars_for_comment: Option<usize>
 ) -> SlimTextAnalysisResult {
+    let original_total_chars_abs = text.chars().count(); 
+    let original_non_whitespace_chars_abs = text.chars().filter(|c| !c.is_whitespace()).count();
+
+    let (cleaned_text, original_chars_processed_lines, kept_chars_processed_lines) = 
+        core_clean_text(text, allowed_chars_ref, unusual_chars_ref, min_chars_for_comment);
     
-    let mut original_total_chars_val = 0;
-    let mut greek_char_count_val = None;
-    let mut latin_char_count_val = None;
-    let mut original_non_whitespace_chars_val = None;
+    let cleaned_total_chars_abs = cleaned_text.chars().count();
 
+    // Calculate badness_score_all_chars
+    let badness_all_chars = if original_chars_processed_lines > 0 {
+        Some(1.0 - (kept_chars_processed_lines as f64 / original_chars_processed_lines as f64))
+    } else {
+        Some(0.0) // Or None if original_chars_processed_lines is 0 implies no processing happened
+    };
+
+    let mut greek_char_count_cleaned: Option<usize> = None;
+    let mut latin_char_count_cleaned: Option<usize> = None;
+    #[allow(unused_assignments)] // Clippy seems to miss its usage in the struct below
+    let mut cleaned_non_whitespace_chars_val: Option<usize> = None;
+
+    // This block already calculates cleaned_non_whitespace_chars_val correctly after cleaning
     if calculate_specific_counts {
-        let mut nw_count = 0;
-        let mut gk_count = 0; 
-        let mut lat_count = 0;
-        
-        // Pre-fetch script sets to avoid repeated lookups in the loop
-        let greek_set_opt = SCRIPT_SETS.get("greek");
-        let latin_set_opt = SCRIPT_SETS.get("latin");
+        let mut current_greek_count = 0;
+        let mut current_latin_count = 0;
+        let mut current_cleaned_non_ws_count = 0;
 
-        for char_val in text.chars() {
-            original_total_chars_val += 1;
-            if !char_val.is_whitespace() {
-                nw_count += 1;
-                if let Some(greek_set) = greek_set_opt {
-                    if greek_set.contains(&char_val) {
-                        gk_count += 1;
-                    }
-                }
-                if let Some(latin_set) = latin_set_opt {
-                    if latin_set.contains(&char_val) {
-                        lat_count += 1;
-                    }
-                }
+        let greek_set = SCRIPT_SETS.get("greek").cloned().unwrap_or_default();
+        let latin_set = SCRIPT_SETS.get("latin").cloned().unwrap_or_default();
+
+        for ch in cleaned_text.chars() {
+            if !ch.is_whitespace() {
+                current_cleaned_non_ws_count += 1;
+            }
+            if scripts_for_percentage_and_specific_counts.contains(&"greek".to_string()) && greek_set.contains(&ch) {
+                current_greek_count += 1;
+            }
+            if scripts_for_percentage_and_specific_counts.contains(&"latin".to_string()) && latin_set.contains(&ch) {
+                current_latin_count += 1;
             }
         }
-        original_non_whitespace_chars_val = Some(nw_count);
-        if gk_count > 0 || greek_set_opt.is_some() { // Store if explicitly looked for or if any found (even if set was None, though unlikely)
-             greek_char_count_val = Some(gk_count);
-        }
-        if lat_count > 0 || latin_set_opt.is_some() {
-            latin_char_count_val = Some(lat_count);
-        }
+        greek_char_count_cleaned = Some(current_greek_count);
+        latin_char_count_cleaned = Some(current_latin_count);
+        cleaned_non_whitespace_chars_val = Some(current_cleaned_non_ws_count);
     } else {
-        original_total_chars_val = text.chars().count();
-        // The following are already Option and will be None by default if not set in the calculate_specific_counts branch.
-        // original_non_whitespace_chars_val = None;
-        // greek_char_count_val = None;
-        // latin_char_count_val = None;
+        cleaned_non_whitespace_chars_val = Some(cleaned_text.chars().filter(|c| !c.is_whitespace()).count());
     }
-    
-    let cleaned_text = core_clean_text(text, allowed_chars_ref, unusual_chars_ref);
-    let cleaned_total_chars_val = cleaned_text.chars().count();
 
+    // Calculate badness_score_non_ws
+    let removed_non_whitespace_chars = original_non_whitespace_chars_abs.saturating_sub(cleaned_non_whitespace_chars_val.unwrap_or(0));
+    let badness_non_ws = if original_non_whitespace_chars_abs > 0 {
+        Some(removed_non_whitespace_chars as f64 / original_non_whitespace_chars_abs as f64)
+    } else {
+        Some(0.0)
+    };
+    
     SlimTextAnalysisResult {
-        original_total_chars: original_total_chars_val,
-        cleaned_total_chars: cleaned_total_chars_val,
-        original_non_whitespace_chars: original_non_whitespace_chars_val,
-        greek_char_count: greek_char_count_val,
-        latin_char_count: latin_char_count_val,
-        cleaned_text_content: cleaned_text, // Populate the new field
+        original_total_chars: original_total_chars_abs,
+        cleaned_total_chars: cleaned_total_chars_abs,
+        original_non_whitespace_chars: Some(original_non_whitespace_chars_abs),
+        greek_char_count_after_clean: greek_char_count_cleaned,
+        latin_char_count_after_clean: latin_char_count_cleaned,
+        cleaned_non_whitespace_chars_after_clean: cleaned_non_whitespace_chars_val,
+        cleaned_text_content: cleaned_text,
+        badness_score_all_chars: badness_all_chars,
+        badness_score_non_ws: badness_non_ws,
     }
 }
 
@@ -318,7 +447,7 @@ pub fn perform_text_analysis(
 /// However, its internal call now uses the slimmed-down analysis.
 /// If this function is ONLY used by the CSV generation, it could be removed or simplified further.
 #[pyfunction]
-pub fn analyze_text(py: Python, text: &str, scripts_to_keep: Vec<String>, calculate_specific_counts: bool) -> PyResult<HashMap<String, PyObject>> {
+pub fn analyze_text(py: Python, text: &str, scripts_to_keep: Vec<String>, calculate_specific_counts: bool, min_chars_for_comment: Option<usize>) -> PyResult<HashMap<String, PyObject>> {
     let mut allowed_chars = HashSet::new();
     for key in &scripts_to_keep {
         if let Some(script_set) = SCRIPT_SETS.get(key) {
@@ -327,82 +456,67 @@ pub fn analyze_text(py: Python, text: &str, scripts_to_keep: Vec<String>, calcul
     }
     for key_str in ["punctuation", "numbers", "common_symbols"].iter() {
         let key = key_str.to_string();
-        if !scripts_to_keep.contains(&key) { 
+        if !scripts_to_keep.contains(&key) {
             if let Some(script_set) = SCRIPT_SETS.get(&key) {
                 allowed_chars.extend(script_set);
             }
         }
     }
-    allowed_chars.insert(' ');
-    allowed_chars.insert('\t');
-    allowed_chars.insert('\n');
-    let unusual_chars = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
+    let unusual_chars_set = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
 
-    // Call the internal slim analysis function
-    let slim_result = perform_text_analysis(
+    let analysis_result = perform_text_analysis(
         text, 
         &allowed_chars, 
-        &unusual_chars, 
-        &scripts_to_keep, 
-        calculate_specific_counts
+        &unusual_chars_set, 
+        &scripts_to_keep,
+        calculate_specific_counts,
+        min_chars_for_comment
     );
 
-    // Convert SlimTextAnalysisResult to HashMap for Python. This will be sparse.
-    let mut py_results: HashMap<String, PyObject> = HashMap::new();
-    py_results.insert("original_total_chars".to_string(), slim_result.original_total_chars.to_object(py));
-    py_results.insert("cleaned_total_chars".to_string(), slim_result.cleaned_total_chars.to_object(py));
+    let mut results = HashMap::new();
+    results.insert("original_total_chars".to_string(), analysis_result.original_total_chars.to_object(py));
+    results.insert("cleaned_total_chars".to_string(), analysis_result.cleaned_total_chars.to_object(py));
+    results.insert("original_non_whitespace_chars".to_string(), analysis_result.original_non_whitespace_chars.unwrap_or(0).to_object(py));
+    results.insert("cleaned_non_whitespace_chars".to_string(), analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0).to_object(py));
     
-    let removal_ratio_score = if slim_result.original_total_chars > 0 {
-        (slim_result.original_total_chars.saturating_sub(slim_result.cleaned_total_chars)) as f64 / slim_result.original_total_chars as f64
-    } else {
-        0.0
-    };
-    py_results.insert("removal_ratio_score".to_string(), removal_ratio_score.to_object(py));
-    // For compatibility, also add retention_score if something expects it
-    let retention_score = if slim_result.original_total_chars > 0 {
-        slim_result.cleaned_total_chars as f64 / slim_result.original_total_chars as f64
-    } else {
-        1.0
-    };
-    py_results.insert("retention_score".to_string(), retention_score.to_object(py));
+    // The definition of removed_chars_count for the old badness_score was (original_total_chars - cleaned_total_chars).
+    // Let's keep that for a general removed count, and use specific badness scores from analysis_result.
+    let removed_chars_count_total = analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars);
+    results.insert("removed_chars_count_total".to_string(), removed_chars_count_total.to_object(py));
 
-    if let Some(count) = slim_result.greek_char_count {
-        py_results.insert("greek_char_count".to_string(), count.to_object(py));
-    }
-    if let Some(count) = slim_result.latin_char_count {
-        py_results.insert("latin_char_count".to_string(), count.to_object(py));
-    }
-    if let Some(count) = slim_result.original_non_whitespace_chars {
-        py_results.insert("original_non_whitespace_chars".to_string(), count.to_object(py));
-    }
-    
-    // Comments_added is not in SlimTextAnalysisResult, so it won't be here unless calculated separately
-    // py_results.insert("comments_added".to_string(), analysis_result.comments_added.to_object(py));
+    // Add the two badness scores
+    results.insert("badness_score_all_chars".to_string(), analysis_result.badness_score_all_chars.unwrap_or(0.0).to_object(py));
+    results.insert("badness_score_non_ws".to_string(), analysis_result.badness_score_non_ws.unwrap_or(0.0).to_object(py));
 
-    // Script percentages are also not part of SlimTextAnalysisResult for now.
-    // If needed by Python callers of analyze_text, this logic would need to be preserved here,
-    // using slim_result.original_non_whitespace_chars.
-    if calculate_specific_counts && !scripts_to_keep.is_empty() && slim_result.original_non_whitespace_chars.is_some() {
-        let total_chars_for_percentage = slim_result.original_non_whitespace_chars.unwrap_or(0);
-        if total_chars_for_percentage > 0 {
-            let non_whitespace_chars_iter = text.chars().filter(|c| !c.is_whitespace()); // Re-iterate for accuracy with original text
-            let percentages_dict = PyDict::new(py);
-            for script_key_str in &scripts_to_keep { 
-                if let Some(charset) = SCRIPT_SETS.get(script_key_str) { 
-                    let script_count = non_whitespace_chars_iter.clone().filter(|c| charset.contains(c)).count();
-                    let percentage = (script_count as f64 / total_chars_for_percentage as f64) * 100.0;
-                    percentages_dict.set_item(script_key_str, percentage)?;
-                }
+    // The old "badness_score" key used original_total_chars - cleaned_total_chars / original_non_whitespace_chars.
+    // This is different from badness_score_non_ws if removed whitespace is significant.
+    // For clarity, I am only exposing the two new specific badness scores.
+    // If the old one is critical, it can be re-calculated here.
+
+    if calculate_specific_counts {
+        if let Some(greek_count) = analysis_result.greek_char_count_after_clean {
+            results.insert("greek_chars_cleaned".to_string(), greek_count.to_object(py));
+            if analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0) > 0 {
+                let percentage_greek = greek_count as f64 / analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(1) as f64 * 100.0;
+                results.insert("percentage_greek_cleaned".to_string(), percentage_greek.to_object(py));
+            } else {
+                results.insert("percentage_greek_cleaned".to_string(), 0.0.to_object(py));
             }
-            py_results.insert("script_percentages".to_string(), percentages_dict.to_object(py));
-        } else {
-            py_results.insert("script_percentages".to_string(), PyDict::new(py).to_object(py));
         }
-    } else {
-         py_results.insert("script_percentages".to_string(), PyDict::new(py).to_object(py));
+        if let Some(latin_count) = analysis_result.latin_char_count_after_clean {
+            results.insert("latin_chars_cleaned".to_string(), latin_count.to_object(py));
+            if analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0) > 0 {
+                let percentage_latin = latin_count as f64 / analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(1) as f64 * 100.0;
+                results.insert("percentage_latin_cleaned".to_string(), percentage_latin.to_object(py));
+            } else {
+                results.insert("percentage_latin_cleaned".to_string(), 0.0.to_object(py));
+            }
+        }
     }
+    
+    results.insert("cleaned_text".to_string(), analysis_result.cleaned_text_content.to_object(py));
 
-    Ok(py_results)
+    Ok(results)
 }
 
 /// Python-exposed function to list available script keys

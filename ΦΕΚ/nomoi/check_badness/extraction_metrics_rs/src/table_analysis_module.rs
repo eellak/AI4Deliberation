@@ -21,6 +21,7 @@ pub struct TableIssue {
     pub found_columns: Option<usize>,
 }
 
+#[allow(non_local_definitions)]
 #[pymethods]
 impl TableIssue {
     #[new]
