@@ -14,10 +14,18 @@ use serde::Serialize;
 use crate::table_analysis_module;
 use crate::cleaning_module;
 
+// Struct to hold summary data for each file before writing to CSV
+#[derive(Debug)]
+struct FileTableSummary {
+    file_path: String,
+    total_tables: usize,
+    malformed_tables: usize,
+}
+
 // Define operation output variants
 pub enum PerFileOperationOutput {
     Content(String),
-    TableIssues(Vec<Py<table_analysis_module::TableIssue>>),
+    TableScanResult(table_analysis_module::TableScan),
     Empty,
 }
 
@@ -159,9 +167,9 @@ where
                                                 *files_processed_count.lock().unwrap() += 1;
                                             }
                                         }
-                                        PerFileOperationOutput::TableIssues(_issues) => {
-                                            // For TableIssues, we'll collect them after parallel processing is done
-                                            println!("DEBUG: Processed table issues");
+                                        PerFileOperationOutput::TableScanResult(table_scan) => {
+                                            // For TableScanResult, we'll collect them after parallel processing is done
+                                            println!("DEBUG: Processed table scan");
                                             *files_processed_count.lock().unwrap() += 1;
                                         },
                                         PerFileOperationOutput::Empty => {
@@ -606,47 +614,6 @@ pub fn batch_clean_markdown_files(
     result
 }
 
-/// Python-exposed function for batch table analysis of markdown files
-#[pyfunction]
-pub fn batch_analyze_tables_in_files(py: Python, input_dir: &str, num_threads: usize) -> PyResult<PyObject> {
-    // We'll use the functions directly from table_analysis_module
-
-    // Create an empty config
-    let config = Arc::new(TableAnalysisConfig {});
-    
-    // Define the table analysis operation
-    let analyze_table_op = |py_thread: Python, content: &str, _config: &Arc<TableAnalysisConfig>| {
-        // Analyze the content for table issues
-        let issues = table_analysis_module::analyze_table_file_op(py_thread, content)?;
-        
-        // Return the issues as part of the operation output
-        if !issues.is_empty() {
-            Ok(PerFileOperationOutput::TableIssues(issues))
-        } else {
-            Ok(PerFileOperationOutput::Empty)
-        }
-    };
-    
-    // Process the directory using the generic processor
-    let result_obj = process_directory_core::<TableAnalysisConfig, _>(
-        py,
-        input_dir,
-        None, // No output directory needed for analysis
-        num_threads,
-        config,
-        analyze_table_op
-    )?;
-    
-    // Extract the Python dictionary from the result
-    let result_dict = result_obj.downcast::<PyDict>(py)?;
-    
-    // Add detailed_results dictionary for table analysis
-    let detailed_results = PyDict::new(py);
-    result_dict.set_item("detailed_results", detailed_results)?;
-    
-    Ok(result_dict.into())
-}
-
 /// Python-exposed function for processing directory with original behavior
 /// This maintains compatibility with existing Python code
 #[pyfunction]
@@ -659,4 +626,122 @@ pub fn process_directory_native(
 ) -> PyResult<PyObject> {
     // This is a wrapper around batch_clean_markdown_files for backward compatibility
     batch_clean_markdown_files(py, input_dir, output_dir, scripts_to_keep, num_threads)
+}
+
+#[pyfunction]
+pub fn batch_generate_table_summary_csv(
+    py: Python, 
+    input_dir_str: &str, 
+    output_csv_path_str: &str, 
+    num_threads: usize
+) -> PyResult<()> {
+    let input_path = Path::new(input_dir_str);
+    if !input_path.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "Input path is not a directory: {}",
+            input_dir_str
+        )));
+    }
+
+    let md_files: Vec<PathBuf> = WalkDir::new(input_path)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| {
+            e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "md")
+        })
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    if md_files.is_empty() {
+        println!("No markdown files found in input directory: {}", input_dir_str);
+        let mut wtr = Writer::from_path(output_csv_path_str)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
+        wtr.write_record(&["file", "total_tables", "malformed_tables"])
+            .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
+        wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV: {}", e)))?;
+        return Ok(());
+    }
+
+    let num_effective_threads = if num_threads == 0 {
+        rayon::current_num_threads()
+    } else {
+        num_threads
+    };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_effective_threads)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("Failed to build Rayon thread pool: {}", e)))?;
+
+    // Corrected GIL handling: py.allow_threads is outermost for the parallel section.
+    // The `pool.install` closure itself should be Send.
+    let results: Vec<FileTableSummary> = py.allow_threads(|| {
+        pool.install(|| {
+            md_files
+                .par_iter()
+                .filter_map(|md_file_path| {
+                    Python::with_gil(|py_thread_token| {
+                        match fs::read_to_string(md_file_path) {
+                            Ok(content) => {
+                                match table_analysis_module::analyze_table_file_op(py_thread_token, &content) {
+                                    Ok(scan_result) => {
+                                        let relative_path = md_file_path.strip_prefix(input_path)
+                                            .unwrap_or(md_file_path)
+                                            .to_string_lossy()
+                                            .into_owned();
+                                        
+                                        Some(FileTableSummary {
+                                            file_path: relative_path,
+                                            total_tables: scan_result.total_tables,
+                                            malformed_tables: scan_result.issues.len(),
+                                        })
+                                    }
+                                    Err(e) => {
+                                        eprintln!("Error analyzing file {}: {}", md_file_path.display(), e);
+                                        None
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Error reading file {}: {}", md_file_path.display(), e);
+                                None
+                            }
+                        }
+                    })
+                })
+                .collect()
+        })
+    });
+
+    if let Some(parent_dir) = Path::new(output_csv_path_str).parent() {
+        if !parent_dir.exists() {
+            fs::create_dir_all(parent_dir).map_err(|e| {
+                PyValueError::new_err(format!(
+                    "Failed to create output directory {}: {}",
+                    parent_dir.display(),
+                    e
+                ))
+            })?;
+        }
+    }
+    
+    let mut wtr = Writer::from_path(output_csv_path_str)
+        .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer for {}: {}", output_csv_path_str, e)))?;
+    
+    wtr.write_record(&["file", "total_tables", "malformed_tables"])
+        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
+
+    for summary in results {
+        wtr.write_record(&[
+            summary.file_path,
+            summary.total_tables.to_string(),
+            summary.malformed_tables.to_string(),
+        ])
+        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV row: {}", e)))?;
+    }
+
+    wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV: {}", e)))?;
+
+    println!("Table summary CSV report generated at: {}", output_csv_path_str);
+    Ok(())
 }
