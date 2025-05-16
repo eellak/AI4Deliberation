@@ -108,3 +108,38 @@ The solution involved ensuring that the Python interpreter used the intended com
 *   **PyO3 Build/Installation**: When building and installing PyO3 extensions, be mindful of where the final package or `.so` file is placed and how it's intended to be imported. Tools like `maturin develop` vs `maturin build --release` followed by `pip install` can have different outcomes for where packages are installed.
 
 This detailed documentation should help in quickly diagnosing similar import-related issues in the future.
+
+## Additional PyO3 Troubleshooting & Build Notes (Post-Initial Setup)
+
+*   **Topic:** Missing Crates for `Lazy` Statics (e.g., `once_cell`)
+    *   **Challenge:** When using `once_cell::sync::Lazy` (or similar constructs for one-time initialization of static variables, often with `Regex`), the build can fail if the `once_cell` crate is not added to `Cargo.toml`.
+    *   **Error Example:** `error[E0433]: failed to resolve: use of unresolved module or unlinked crate \`once_cell\``
+    *   **Solution:** Add the required crate to the `[dependencies]` section of your `Cargo.toml` file. For example: `once_cell = \"1.19.0\"` (or the latest compatible version).
+
+*   **Topic:** Ensuring Python Loads the *Latest* Compiled Rust Extension
+    *   **Challenge:** After making changes to Rust code and rebuilding with `maturin develop` (or similar), Python might still load an older, cached version of the extension from `site-packages`, leading to errors like "function takes X arguments but Y were given" or other unexpected behavior reflecting old code.
+    *   **Diagnosis Steps:**
+        1.  Activate your virtual environment: `source /path/to/your/venv/bin/activate`
+        2.  Run a Python command to check the loaded module's file path: 
+            `/path/to/your/venv/bin/python -c "import your_rust_module_name; print(your_rust_module_name.__file__)"`
+            (Replace `your_rust_module_name` with the actual name, e.g., `text_cleaner_rs`).
+        3.  Inspect the output. If it points to an `.so` file (or similar, like a `__init__.py` in a directory for older `maturin` versions) within your project's `target` directory or a temporary build directory, `maturin develop` might be working as intended by linking directly. However, if it points to a stale copy in `site-packages` that doesn't reflect recent changes, you have a caching issue.
+    *   **Solution (Force Update in Virtual Environment):**
+        1.  **Clean Old Versions from `site-packages` (within the active venv):**
+            *   Identify the paths. Common locations in a venv (`<venv_path>/lib/pythonX.Y/site-packages/`) include:
+                *   `your_rust_module_name.so`
+                *   `your_rust_module_name/` (directory, for some older package structures)
+                *   `your_rust_module_name-*.dist-info/` (directory)
+            *   Remove them (be careful with `rm -rf`):
+                ```bash
+                VENV_SITE_PACKAGES=/path/to/your/venv/lib/pythonX.Y/site-packages
+                rm -rf $VENV_SITE_PACKAGES/your_rust_module_name.so
+                rm -rf $VENV_SITE_PACKAGES/your_rust_module_name
+                rm -rf $VENV_SITE_PACKAGES/your_rust_module_name-*.dist-info
+                ```
+        2.  **Rebuild and Install with `maturin develop`:**
+            *   Navigate to your Rust project directory (where `Cargo.toml` is).
+            *   Ensure your virtual environment is still active.
+            *   Run: `maturin develop` (or `source /path/to/venv/bin/activate && maturin develop` if you need to ensure activation in the same command context for the tool).
+        3.  **Re-verify:** Repeat the diagnosis step to confirm Python now loads the extension from the correct, updated path (often a link managed by `maturin develop` or a newly copied `.so` file in `site-packages`).
+    *   **Context:** This issue was specifically encountered when a function signature in Rust (`analyze_text`) was changed (added a parameter), but Python kept calling the old signature because `maturin develop` hadn't correctly updated or Python hadn't picked up the fresh build from `site-packages` until the old versions were manually cleared.

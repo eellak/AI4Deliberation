@@ -487,6 +487,7 @@ dependencies = [
  "csv",
  "futures",
  "lazy_static",
+ "once_cell",
  "pyo3",
  "rayon",
  "regex",

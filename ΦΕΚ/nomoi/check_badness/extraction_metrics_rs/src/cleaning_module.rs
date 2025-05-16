@@ -3,6 +3,8 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use once_cell::sync::Lazy;
+use serde::Serialize;
 
 // Constants
 const TEXT_MISSING_COMMENT: &str = "<!-- text-missing -->";
@@ -82,12 +84,24 @@ lazy_static! {
     };
 }
 
+// Regex for the new font-based line removal
+static FONT_LINE_REMOVAL_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"MS-Bold-\d+&gt;").unwrap() // As per user example
+});
+
 /// Core text cleaning function - removes unwanted characters based on script sets
 pub fn core_clean_text(text: &str, allowed_chars: &HashSet<char>, unusual_chars_set: &HashSet<char>) -> String {
     const MIN_CHARS_FOR_COMMENT: usize = 5; 
     let mut cleaned_output = String::new();
 
     for line in text.lines() {
+        // Apply font-based line removal first
+        if line.contains("MS-Bold-") && FONT_LINE_REMOVAL_REGEX.is_match(line) {
+            cleaned_output.push_str(TEXT_MISSING_COMMENT);
+            cleaned_output.push('\n');
+            continue; // Move to the next line
+        }
+
         let mut processed_line_segment = String::new(); 
         let mut current_line_removed_chars_buffer = String::new(); 
 
@@ -195,6 +209,7 @@ pub fn clean_text(text: &str, scripts_to_keep: Vec<String>) -> PyResult<String> 
 }
 
 // Helper function for script percentage calculation (moved from analyze_text for clarity)
+/*
 fn calc_script_percentages(py: Python, text: &str, scripts_to_keep: &[String]) -> PyResult<PyObject> {
     let percentages_dict = PyDict::new(py);
     
@@ -219,95 +234,182 @@ fn calc_script_percentages(py: Python, text: &str, scripts_to_keep: &[String]) -
     
     Ok(percentages_dict.to_object(py))
 }
+*/
 
-/// Python-exposed function to analyze text metrics
-#[pyfunction]
-pub fn analyze_text(py: Python, text: &str, scripts_to_keep: Vec<String>) -> PyResult<HashMap<String, PyObject>> {
-    let comment_length = TEXT_MISSING_COMMENT.chars().count();
+// Define the SLIMMED DOWN struct to hold only essential analysis results for CSV
+#[derive(Debug, Clone, Serialize)]
+pub struct SlimTextAnalysisResult {
+    pub original_total_chars: usize,
+    pub cleaned_total_chars: usize,
+    pub original_non_whitespace_chars: Option<usize>, // Needed for percentages
+    pub greek_char_count: Option<usize>,
+    pub latin_char_count: Option<usize>,
+    pub cleaned_text_content: String, // Added field
+}
 
-    let original_total_chars = text.chars().count();
-    let original_non_whitespace = text.chars().filter(|c| !c.is_whitespace()).count();
+// Internal function to perform text analysis and return the SLIMMED DOWN struct
+pub fn perform_text_analysis(
+    text: &str, 
+    allowed_chars_ref: &HashSet<char>,
+    unusual_chars_ref: &HashSet<char>,
+    _scripts_for_percentage_and_specific_counts: &[String], 
+    calculate_specific_counts: bool 
+) -> SlimTextAnalysisResult {
     
-    // For badness calculation: clean with a comprehensive set of "good" characters
-    let mut allowed_chars_for_badness_calc = HashSet::new();
-    SCRIPT_SETS.iter()
-        .filter(|(k, _)| **k != "unusual") // Exclude "unusual" from what's considered "good"
-        .for_each(|(_, set)| allowed_chars_for_badness_calc.extend(set));
-    // Ensure basic whitespace is also considered "good" for this purpose
-    allowed_chars_for_badness_calc.insert(' ');
-    allowed_chars_for_badness_calc.insert('\t');
-    allowed_chars_for_badness_calc.insert('\n');
+    let mut original_total_chars_val = 0;
+    let mut greek_char_count_val = None;
+    let mut latin_char_count_val = None;
+    let mut original_non_whitespace_chars_val = None;
 
-    let unusual_chars_set_for_badness = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
-    let cleaned_text_for_badness = core_clean_text(text, &allowed_chars_for_badness_calc, &unusual_chars_set_for_badness);
+    if calculate_specific_counts {
+        let mut nw_count = 0;
+        let mut gk_count = 0; 
+        let mut lat_count = 0;
+        
+        // Pre-fetch script sets to avoid repeated lookups in the loop
+        let greek_set_opt = SCRIPT_SETS.get("greek");
+        let latin_set_opt = SCRIPT_SETS.get("latin");
 
-    let cleaned_total_chars = cleaned_text_for_badness.chars().count();
-    let cleaned_non_whitespace_raw = cleaned_text_for_badness.chars().filter(|c| !c.is_whitespace()).count();
-
-    let comment_count = cleaned_text_for_badness.matches(TEXT_MISSING_COMMENT).count();
-    let comment_chars_in_cleaned = comment_count * comment_length;
-
-    let cleaned_non_whitespace_adjusted = cleaned_non_whitespace_raw.saturating_sub(comment_chars_in_cleaned);
-    
-    let bad_count = original_non_whitespace.saturating_sub(cleaned_non_whitespace_adjusted);
-    let good_count = original_non_whitespace.saturating_sub(bad_count);
-    
-    let badness = if original_non_whitespace > 0 {
-        bad_count as f64 / original_non_whitespace as f64
+        for char_val in text.chars() {
+            original_total_chars_val += 1;
+            if !char_val.is_whitespace() {
+                nw_count += 1;
+                if let Some(greek_set) = greek_set_opt {
+                    if greek_set.contains(&char_val) {
+                        gk_count += 1;
+                    }
+                }
+                if let Some(latin_set) = latin_set_opt {
+                    if latin_set.contains(&char_val) {
+                        lat_count += 1;
+                    }
+                }
+            }
+        }
+        original_non_whitespace_chars_val = Some(nw_count);
+        if gk_count > 0 || greek_set_opt.is_some() { // Store if explicitly looked for or if any found (even if set was None, though unlikely)
+             greek_char_count_val = Some(gk_count);
+        }
+        if lat_count > 0 || latin_set_opt.is_some() {
+            latin_char_count_val = Some(lat_count);
+        }
     } else {
-        0.0
-    };
+        original_total_chars_val = text.chars().count();
+        // The following are already Option and will be None by default if not set in the calculate_specific_counts branch.
+        // original_non_whitespace_chars_val = None;
+        // greek_char_count_val = None;
+        // latin_char_count_val = None;
+    }
+    
+    let cleaned_text = core_clean_text(text, allowed_chars_ref, unusual_chars_ref);
+    let cleaned_total_chars_val = cleaned_text.chars().count();
 
-    // For script percentages: use user-specified scripts_to_keep to create allowed_char set
-    // This reuses the logic from the clean_text pyfunction for consistency
-    let mut allowed_chars_for_script_calc = HashSet::new();
+    SlimTextAnalysisResult {
+        original_total_chars: original_total_chars_val,
+        cleaned_total_chars: cleaned_total_chars_val,
+        original_non_whitespace_chars: original_non_whitespace_chars_val,
+        greek_char_count: greek_char_count_val,
+        latin_char_count: latin_char_count_val,
+        cleaned_text_content: cleaned_text, // Populate the new field
+    }
+}
+
+/// Python-exposed function to analyze text metrics (still returns full HashMap for compatibility if needed elsewhere)
+/// However, its internal call now uses the slimmed-down analysis.
+/// If this function is ONLY used by the CSV generation, it could be removed or simplified further.
+#[pyfunction]
+pub fn analyze_text(py: Python, text: &str, scripts_to_keep: Vec<String>, calculate_specific_counts: bool) -> PyResult<HashMap<String, PyObject>> {
+    let mut allowed_chars = HashSet::new();
     for key in &scripts_to_keep {
         if let Some(script_set) = SCRIPT_SETS.get(key) {
-            allowed_chars_for_script_calc.extend(script_set);
+            allowed_chars.extend(script_set);
         }
     }
     for key_str in ["punctuation", "numbers", "common_symbols"].iter() {
         let key = key_str.to_string();
         if !scripts_to_keep.contains(&key) { 
             if let Some(script_set) = SCRIPT_SETS.get(&key) {
-                allowed_chars_for_script_calc.extend(script_set);
+                allowed_chars.extend(script_set);
+            }
         }
     }
-    }
-    allowed_chars_for_script_calc.insert(' ');
-    allowed_chars_for_script_calc.insert('\t');
-    allowed_chars_for_script_calc.insert('\n');
-    
-    // We need to clean the text *again* using only the characters relevant for script percentage calculation
-    // This is because the content used for script percentages should only reflect the characters the user *wants* to keep.
-    let unusual_chars_for_script_calc = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default(); // same unusual set
-    let cleaned_text_for_script_percentages = core_clean_text(text, &allowed_chars_for_script_calc, &unusual_chars_for_script_calc);
-    let script_percentages = calc_script_percentages(py, &cleaned_text_for_script_percentages, &scripts_to_keep)?;
+    allowed_chars.insert(' ');
+    allowed_chars.insert('\t');
+    allowed_chars.insert('\n');
+    let unusual_chars = SCRIPT_SETS.get("unusual").cloned().unwrap_or_default();
 
-    let glyph_count_original = GLYPH_WORD_REGEX.find_iter(text).count(); // Count glyphs in original
-    let unusual_chars_original_count = text.chars().filter(|c| unusual_chars_set_for_badness.contains(c)).count(); // Count unusual in original
+    // Call the internal slim analysis function
+    let slim_result = perform_text_analysis(
+        text, 
+        &allowed_chars, 
+        &unusual_chars, 
+        &scripts_to_keep, 
+        calculate_specific_counts
+    );
+
+    // Convert SlimTextAnalysisResult to HashMap for Python. This will be sparse.
+    let mut py_results: HashMap<String, PyObject> = HashMap::new();
+    py_results.insert("original_total_chars".to_string(), slim_result.original_total_chars.to_object(py));
+    py_results.insert("cleaned_total_chars".to_string(), slim_result.cleaned_total_chars.to_object(py));
     
-    let mut result = HashMap::new();
-    result.insert("badness".to_string(), badness.to_object(py));
-    result.insert("bad_count".to_string(), bad_count.to_object(py));
-    result.insert("good_count".to_string(), good_count.to_object(py));
-    result.insert("total_chars".to_string(), original_total_chars.to_object(py));
-    result.insert("total_non_whitespace".to_string(), original_non_whitespace.to_object(py));
-    result.insert("cleaned_chars".to_string(), cleaned_total_chars.to_object(py)); // Based on badness cleaning
-    result.insert("cleaned_non_whitespace".to_string(), cleaned_non_whitespace_raw.to_object(py)); // Based on badness cleaning
-    result.insert("glyph_count".to_string(), glyph_count_original.to_object(py));
-    result.insert("unusual_count".to_string(), unusual_chars_original_count.to_object(py));
-    result.insert("comment_markers".to_string(), comment_count.to_object(py));
-    result.insert("script_percentages".to_string(), script_percentages.to_object(py));
+    let removal_ratio_score = if slim_result.original_total_chars > 0 {
+        (slim_result.original_total_chars.saturating_sub(slim_result.cleaned_total_chars)) as f64 / slim_result.original_total_chars as f64
+    } else {
+        0.0
+    };
+    py_results.insert("removal_ratio_score".to_string(), removal_ratio_score.to_object(py));
+    // For compatibility, also add retention_score if something expects it
+    let retention_score = if slim_result.original_total_chars > 0 {
+        slim_result.cleaned_total_chars as f64 / slim_result.original_total_chars as f64
+    } else {
+        1.0
+    };
+    py_results.insert("retention_score".to_string(), retention_score.to_object(py));
+
+    if let Some(count) = slim_result.greek_char_count {
+        py_results.insert("greek_char_count".to_string(), count.to_object(py));
+    }
+    if let Some(count) = slim_result.latin_char_count {
+        py_results.insert("latin_char_count".to_string(), count.to_object(py));
+    }
+    if let Some(count) = slim_result.original_non_whitespace_chars {
+        py_results.insert("original_non_whitespace_chars".to_string(), count.to_object(py));
+    }
     
-    Ok(result)
+    // Comments_added is not in SlimTextAnalysisResult, so it won't be here unless calculated separately
+    // py_results.insert("comments_added".to_string(), analysis_result.comments_added.to_object(py));
+
+    // Script percentages are also not part of SlimTextAnalysisResult for now.
+    // If needed by Python callers of analyze_text, this logic would need to be preserved here,
+    // using slim_result.original_non_whitespace_chars.
+    if calculate_specific_counts && !scripts_to_keep.is_empty() && slim_result.original_non_whitespace_chars.is_some() {
+        let total_chars_for_percentage = slim_result.original_non_whitespace_chars.unwrap_or(0);
+        if total_chars_for_percentage > 0 {
+            let non_whitespace_chars_iter = text.chars().filter(|c| !c.is_whitespace()); // Re-iterate for accuracy with original text
+            let percentages_dict = PyDict::new(py);
+            for script_key_str in &scripts_to_keep { 
+                if let Some(charset) = SCRIPT_SETS.get(script_key_str) { 
+                    let script_count = non_whitespace_chars_iter.clone().filter(|c| charset.contains(c)).count();
+                    let percentage = (script_count as f64 / total_chars_for_percentage as f64) * 100.0;
+                    percentages_dict.set_item(script_key_str, percentage)?;
+                }
+            }
+            py_results.insert("script_percentages".to_string(), percentages_dict.to_object(py));
+        } else {
+            py_results.insert("script_percentages".to_string(), PyDict::new(py).to_object(py));
+        }
+    } else {
+         py_results.insert("script_percentages".to_string(), PyDict::new(py).to_object(py));
+    }
+
+    Ok(py_results)
 }
 
 /// Python-exposed function to list available script keys
 #[pyfunction]
 pub fn list_available_scripts() -> PyResult<Vec<String>> {
     Ok(SCRIPT_SETS.keys()
-        .filter(|&k| **k != *"unusual") // k is &&String, so double dereference, also dereference RHS for str vs str comparison
+        .filter(|&k| **k != *"unusual")
         .cloned()
         .collect())
 }

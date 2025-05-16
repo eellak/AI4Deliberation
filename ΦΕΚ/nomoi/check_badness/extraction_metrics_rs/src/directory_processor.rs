@@ -3,14 +3,15 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashSet};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use walkdir::WalkDir;
+use csv::Writer;
 
-use crate::cleaning_module;
 use crate::table_analysis_module;
+use crate::cleaning_module;
 
 // Define operation output variants
 pub enum PerFileOperationOutput {
@@ -126,7 +127,7 @@ where
                                             println!("DEBUG: Processed content has {} chars", processed_content.len());
                                             
                                             // Release the GIL for file operations
-                                            drop(py_thread);
+                                            let _ = py_thread;
                                             
                                             if let Some(output_base_path) = &output_path_opt_copy {
                                                 let relative_path = md_file_path.strip_prefix(&input_path_copy).unwrap_or(md_file_path);
@@ -220,6 +221,247 @@ struct TableAnalysisConfig {
     // Empty configuration as we don't need special settings for table analysis
 }
 
+#[pyfunction]
+#[pyo3(signature = (input_dir_str, output_csv_path_str, output_dir_cleaned_files_str, scripts_to_analyze, num_threads))]
+pub fn generate_analysis_report_for_directory(
+    py: Python,
+    input_dir_str: &str,
+    output_csv_path_str: &str,
+    output_dir_cleaned_files_str: Option<&str>,
+    scripts_to_analyze: Vec<String>,
+    num_threads: usize,
+) -> PyResult<()> {
+    let input_path = Path::new(input_dir_str);
+    if !input_path.is_dir() {
+        return Err(PyValueError::new_err(format!(
+            "Input path is not a directory: {}", input_dir_str
+        )));
+    }
+
+    let output_csv_path = Path::new(output_csv_path_str);
+    if let Some(parent) = output_csv_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            PyValueError::new_err(format!(
+                "Failed to create output directory {}: {}",
+                parent.display(),
+                e
+            ))
+        })?;
+    }
+    
+    let md_files: Vec<PathBuf> = WalkDir::new(input_path)
+        .into_iter().filter_map(Result::ok)
+        .filter(|e| e.path().is_file() && e.path().extension().map_or(false, |ext| ext == "md"))
+        .map(|e| e.path().to_path_buf())
+        .collect();
+
+    if md_files.is_empty() {
+        println!("INFO: No markdown files found. CSV will be empty except for headers.");
+        // Create CSV with only headers if no files found
+        let mut wtr = Writer::from_path(output_csv_path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
+        wtr.write_record(&["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
+            .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
+        wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer: {}", e)))?;
+        return Ok(());
+    }
+    
+    let thread_count = if num_threads > 0 { num_threads } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(thread_count)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("Failed to build thread pool: {}", e)))?;
+
+    // --- Character Set Preparation ---
+    let mut base_allowed_chars = HashSet::new();
+    // Use scripts_to_analyze to build the initial set of allowed characters
+    for key in &scripts_to_analyze {
+        if let Some(script_set) = cleaning_module::SCRIPT_SETS.get(key) {
+            base_allowed_chars.extend(script_set);
+        }
+    }
+    // Ensure common scripts (punctuation, numbers, common_symbols) are always included.
+    for key_str in ["punctuation", "numbers", "common_symbols"].iter() {
+        let key = key_str.to_string();
+        // Add common scripts if they weren't already in scripts_to_analyze (or just add them unconditionally)
+        if let Some(script_set) = cleaning_module::SCRIPT_SETS.get(&key) {
+            base_allowed_chars.extend(script_set);
+        }
+    }
+    base_allowed_chars.insert(' ');
+    base_allowed_chars.insert('\t');
+    base_allowed_chars.insert('\n');
+    
+    let allowed_chars_arc = Arc::new(base_allowed_chars);
+    let unusual_chars_arc = Arc::new(cleaning_module::SCRIPT_SETS.get("unusual").cloned().unwrap_or_default());
+
+    // Scripts for which specific counts are needed (for percentages)
+    // For the CSV, we specifically need Greek and Latin counts.
+    // The `_scripts_for_percentage_and_specific_counts` parameter of `perform_text_analysis`
+    // expects a slice of strings. We will pass ["greek", "latin"].
+    // `calculate_specific_counts` being true ensures these are attempted.
+    // The `SlimTextAnalysisResult` struct has specific fields for greek_char_count and latin_char_count.
+    // So, we just need to ensure `calculate_specific_counts` is true.
+    // The `scripts_to_analyze` argument to *this* function (`generate_analysis_report_for_directory`)
+    // is primarily for constructing `allowed_chars_arc`.
+    // The `perform_text_analysis` will try to populate greek/latin counts if `calculate_specific_counts` is true,
+    // irrespective of what's in its `_scripts_for_percentage_and_specific_counts` argument, because
+    // `SlimTextAnalysisResult` has dedicated fields for them.
+    // However, to be clean, let's define the scripts we are interested in for counting for perform_text_analysis.
+    // It's a bit confusing as `perform_text_analysis` has `_scripts_for_percentage_and_specific_counts`
+    // but `SlimTextAnalysisResult` has hardcoded optional fields for Greek/Latin.
+    // Let's assume `perform_text_analysis` uses `_scripts_for_percentage_and_specific_counts` to decide
+    // *which* of several possible script counts to calculate if it were more generic.
+    // For now, as per `SlimTextAnalysisResult`, only Greek and Latin are explicitly handled.
+    // We will pass the specific strings "greek" and "latin" to `perform_text_analysis`.
+    let scripts_for_perform_analysis_arc = Arc::new(vec!["greek".to_string(), "latin".to_string()]);
+
+    // Re-introduce input_path_arc here
+    let input_path_arc = Arc::new(input_path.to_path_buf()); 
+    let output_cleaned_path_arc = Arc::new(output_dir_cleaned_files_str.map(PathBuf::from));
+
+    println!("Starting parallel analysis phase...");
+    let analysis_phase_start = std::time::Instant::now();
+
+    // Results for CSV will be collected from parallel tasks.
+    let collected_analysis_results: Vec<(String, f64, f64, f64)> = py.allow_threads(|| {
+        pool.install(|| {
+            md_files
+                .par_iter()
+                .filter_map(|md_file_path| {
+                    let allowed_chars_thread = Arc::clone(&allowed_chars_arc);
+                    let unusual_chars_thread = Arc::clone(&unusual_chars_arc);
+                    let scripts_for_counts_thread = Arc::clone(&scripts_for_perform_analysis_arc);
+                    let local_input_path_arc = Arc::clone(&input_path_arc);
+                    let local_output_cleaned_path_arc = Arc::clone(&output_cleaned_path_arc);
+
+                    match fs::read_to_string(md_file_path) {
+                        Ok(content) => {
+                            let analysis_result = cleaning_module::perform_text_analysis(
+                                &content,
+                                &allowed_chars_thread,
+                                &unusual_chars_thread,
+                                &scripts_for_counts_thread,
+                                true, 
+                            );
+
+                            // Optionally save cleaned file
+                            if let Some(output_base_path) = &*local_output_cleaned_path_arc {
+                                let relative_path = md_file_path.strip_prefix(&*local_input_path_arc).unwrap_or(md_file_path);
+                                let target_file_path = output_base_path.join(relative_path);
+                                
+                                if let Some(parent_dir) = target_file_path.parent() {
+                                    if !parent_dir.exists() {
+                                        // This error should ideally be collected or handled more robustly
+                                        if fs::create_dir_all(parent_dir).is_err() {
+                                            eprintln!("ERROR: Failed to create directory for cleaned file: {}", parent_dir.display());
+                                            // Decide if we should skip this file or error out
+                                        }
+                                    }
+                                }
+                                
+                                if fs::write(&target_file_path, &analysis_result.cleaned_text_content).is_err() {
+                                    eprintln!("ERROR: Failed to write cleaned file: {}", target_file_path.display());
+                                    // Decide if we should skip this file or error out
+                                }
+                            }
+
+                            let badness_score_to_collect = if analysis_result.original_total_chars > 0 {
+                                (analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars)) as f64 
+                                    / analysis_result.original_total_chars as f64
+                            } else {
+                                0.0 
+                            };
+
+                            // Greek and Latin percentages will be 0.0 as Gk/Lat counting is currently off in cleaning_module.rs
+                            // let greek_percentage_to_collect = 0.0; 
+                            // let latin_percentage_to_collect = 0.0;
+                            
+                            let original_nw_chars_for_calc = analysis_result.original_non_whitespace_chars.unwrap_or(0);
+
+                            let greek_percentage_to_collect = if original_nw_chars_for_calc > 0 {
+                                (analysis_result.greek_char_count.unwrap_or(0) as f64 / original_nw_chars_for_calc as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+
+                            let latin_percentage_to_collect = if original_nw_chars_for_calc > 0 {
+                                (analysis_result.latin_char_count.unwrap_or(0) as f64 / original_nw_chars_for_calc as f64) * 100.0
+                            } else {
+                                0.0
+                            };
+                            
+                            let relative_path_str = md_file_path
+                                .strip_prefix(&*local_input_path_arc) 
+                                .unwrap_or(md_file_path)
+                                .to_string_lossy()
+                                .into_owned();
+
+                            Some((
+                                relative_path_str,
+                                badness_score_to_collect,    // This is 0.0
+                                greek_percentage_to_collect, // This is 0.0
+                                latin_percentage_to_collect, // This is 0.0
+                            ))
+                        }
+                        Err(_err) => {
+                             eprintln!("ERROR: Failed to read file {}: {:?}", md_file_path.display(), _err);
+                            None 
+                        }
+                    }
+                })
+                .collect()
+        })
+    });
+
+    let analysis_phase_duration = analysis_phase_start.elapsed();
+    println!("Parallel analysis phase completed in: {:.2?}", analysis_phase_duration);
+
+    // Commenting out CSV writing phase for this test
+    /*
+    println!("Starting CSV writing phase...");
+    */
+    // Restoring CSV writing phase
+    println!("Starting CSV writing phase...");
+    let csv_writing_start = std::time::Instant::now();
+
+    let mut wtr = Writer::from_path(output_csv_path)
+        .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
+    
+    wtr.write_record(&["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
+        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
+
+    for (path, score, greek_p, latin_p) in collected_analysis_results.iter() {
+        wtr.write_record(&[
+            path,
+            &format!("{:.3}", score),     // Will be formatted as "0.000"
+            &format!("{:.3}", greek_p),   // Will be formatted as "0.000"
+            &format!("{:.3}", latin_p),   // Will be formatted as "0.000"
+        ])
+        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV record for {}: {}", path, e)))?;
+    }
+
+    wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer: {}", e)))?;
+    
+    let csv_writing_duration = csv_writing_start.elapsed();
+    println!("CSV writing phase completed in: {:.2?}", csv_writing_duration);
+    /*
+    println!("CSV writing phase was SKIPPED for this test.");
+    */
+
+    let files_processed_count = collected_analysis_results.len();
+    let files_error_count = md_files.len() - files_processed_count; // Files that failed to read
+
+    println!(
+        "CSV report generated at: {}. Processed: {}, Errors reading files: {}",
+        output_csv_path_str,
+        files_processed_count,
+        files_error_count
+    );
+
+    Ok(())
+}
+
 /// Python-exposed function for batch cleaning of markdown files
 #[pyfunction]
 pub fn batch_clean_markdown_files(
@@ -256,7 +498,7 @@ pub fn batch_clean_markdown_files(
     }
     
     // Include common non-alphabetic sets if not specified - use correct keys that match SCRIPT_SETS
-    let keys_to_include = ["punct", "num", "sym"]; // These match the keys in cleaning_module.rs
+    let keys_to_include = ["punctuation", "numbers", "common_symbols"]; // Corrected keys
     println!("DEBUG: Also adding characters from: {:?}", keys_to_include);
     
     for key_to_always_include in keys_to_include {

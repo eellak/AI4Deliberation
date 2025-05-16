@@ -25,6 +25,7 @@ fn text_cleaner_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(directory_processor::process_directory_native, m)?)?;
     m.add_function(wrap_pyfunction!(directory_processor::batch_clean_markdown_files, m)?)?;
     m.add_function(wrap_pyfunction!(directory_processor::batch_analyze_tables_in_files, m)?)?;
+    m.add_function(wrap_pyfunction!(directory_processor::generate_analysis_report_for_directory, m)?)?;
     
     Ok(())
 }
