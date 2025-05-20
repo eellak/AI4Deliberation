@@ -138,6 +138,7 @@ Enhance the `text_cleaner_rs` Rust library and its Python wrapper (`table_detect
     It will then produce a new set of markdown files where identified malformed tables are replaced with a `<!-- table-missing -->` comment.
 
 *   **Rust Core (`extraction_metrics_rs`):**
+    0.  **Encapsulate Table Removal Logic**: Design the table removal functionality in a well-encapsulated manner. This might involve creating a new Rust module (e.g., `table_remover_module.rs`) if the complexity warrants it, or organizing it clearly within existing modules like `directory_processor.rs`.
     1.  **New Function in `directory_processor.rs` (e.g., `batch_process_table_structures`):**
         *   **Inputs**:
             *   `input_md_dir_stage1`: Path to directory of markdown files already processed by initial cleaning.

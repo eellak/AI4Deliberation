@@ -5,32 +5,41 @@
 mod cleaning_module;
 mod table_analysis_module;
 mod directory_processor;
+mod table_remover_module;
+mod pipeline_module;
 
 // Export public items from modules via PyO3
 use pyo3::prelude::*;
+use pipeline_module::run_complete_pipeline; // Bring the #[pyfunction] into scope
+use directory_processor::{
+    generate_analysis_report_for_directory, 
+    batch_generate_detailed_table_report_csv, 
+    batch_remove_tables_from_files,
+    batch_generate_table_summary_csv
+};
 
 // Python module definition
 #[pymodule]
 fn text_cleaner_rs(_py: Python, m: &PyModule) -> PyResult<()> {
-    // Functions from cleaning_module
-    m.add_function(wrap_pyfunction!(cleaning_module::clean_text, m)?)?;
-    m.add_function(wrap_pyfunction!(cleaning_module::analyze_text, m)?)?;
-    m.add_function(wrap_pyfunction!(cleaning_module::list_available_scripts, m)?)?;
-    
-    // Functions from table_analysis_module
-    m.add_class::<table_analysis_module::TableIssue>()?;
-    m.add_function(wrap_pyfunction!(table_analysis_module::analyze_tables_in_string, m)?)?;
-    
-    // Functions from directory_processor
-    // Add the new batch CSV generation function
-    m.add_function(wrap_pyfunction!(directory_processor::batch_generate_table_summary_csv, m)?)?;
+    // Registering the new pipeline function (now directly as it's a #[pyfunction])
+    m.add_function(wrap_pyfunction!(run_complete_pipeline, m)?)?;
 
-    // Kept other existing functions from directory_processor for now, assuming they serve other purposes.
-    // If they are deprecated or replaced, they can be removed.
-    m.add_function(wrap_pyfunction!(directory_processor::process_directory_native, m)?)?;
-    m.add_function(wrap_pyfunction!(directory_processor::batch_clean_markdown_files, m)?)?;
-    // The old batch_analyze_tables_in_files was commented out in previous step, which is good.
-    m.add_function(wrap_pyfunction!(directory_processor::generate_analysis_report_for_directory, m)?)?;
-    
+    // Re-exposing older functions for individual script compatibility
+    m.add_function(wrap_pyfunction!(generate_analysis_report_for_directory, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_generate_detailed_table_report_csv, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_remove_tables_from_files, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_generate_table_summary_csv, m)?)?;
+
+    // For now, only exposing the main pipeline function and essential classes.
+    // Other individual functions from submodules can be re-exposed later if needed,
+    // after verifying their exact names and signatures as defined within their modules.
+
+    m.add_class::<table_analysis_module::TableIssue>()?; // TableIssue is a PyClass
+    // Other classes like TableScan and SlimTextAnalysisResult are not PyClasses and were removed.
+
+    // Most functions from directory_processor are likely superseded by the new pipeline for typical use.
+    // If specific ones like generate_analysis_report_for_directory are still needed independently,
+    // they can be added back carefully.
+
     Ok(())
 }

@@ -3,7 +3,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
-use std::collections::{HashSet};
+use std::collections::{HashSet, HashMap};
 use std::fs::{self};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -13,34 +13,54 @@ use serde::Serialize;
 
 use crate::table_analysis_module;
 use crate::cleaning_module;
+use crate::table_remover_module;
+
+// Helper to convert Path to String, lossy
+fn path_to_str(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
 
 // Struct to hold summary data for each file before writing to CSV
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 struct FileTableSummary {
     file_path: String,
     total_tables: usize,
     malformed_tables: usize,
 }
 
+// Struct for detailed table issue reporting
+#[derive(Debug, Serialize, Clone)]
+struct DetailedTableIssueReportEntry {
+    file_path: String,
+    issue_description: String,
+    table_start_line: usize,
+    table_end_line: usize,
+}
+
 // Define operation output variants
+#[derive(Clone)]
 pub enum PerFileOperationOutput {
     Content(String),
     TableScanResult(table_analysis_module::TableScan),
+    DetailedTableIssues(Vec<DetailedTableIssueReportEntry>),
+    OperationSuccess(PathBuf),
+    OperationError(PathBuf, String),
     Empty,
 }
 
 /// Core directory processing function with concurrency support
-fn process_directory_core<OpConfig, OpFn>(
-    py: Python,
+fn process_directory_core<OpConfig, OpFn, PerFileOutput>(
+    _py: Python,
     input_dir_str: &str,
     output_dir_str: Option<&str>,
     num_threads: usize,
     operation_config: Arc<OpConfig>,
     file_operation: OpFn,
-) -> PyResult<PyObject>
+) -> PyResult<Vec<PerFileOutput>>
 where
     OpConfig: Send + Sync + 'static,
-    OpFn: Fn(Python, &str, &Arc<OpConfig>) -> PyResult<PerFileOperationOutput> + Send + Sync + 'static,
+    OpFn: Fn(Python, PathBuf, &str, &Arc<OpConfig>) -> PyResult<Option<PerFileOutput>> + Send + Sync + 'static,
+    PerFileOutput: Send + Sync + Clone + 'static,
 {
     println!("DEBUG: Entering process_directory_core");
     let input_path = Path::new(input_dir_str);
@@ -74,11 +94,7 @@ where
 
     if md_files.is_empty() {
         println!("INFO: No markdown files found in input directory");
-        let summary = PyDict::new(py);
-        summary.set_item("status", "success")?;
-        summary.set_item("message", "No markdown files found in input directory.")?;
-        summary.set_item("files_processed", 0)?;
-        return Ok(summary.into());
+        return Ok(Vec::new());
     }
 
     println!("getting warmer");
@@ -99,18 +115,13 @@ where
         .build()
         .map_err(|e| PyValueError::new_err(format!("Failed to build thread pool: {}", e)))?;
 
-    let files_processed_count = Arc::new(Mutex::new(0_usize));
-    let files_error_count = Arc::new(Mutex::new(0_usize));
-
-    // Store a copy of values we need for later
-    let input_path_copy = input_path.to_path_buf();
-    let output_path_opt_copy = output_path_opt.map(|p| p.to_path_buf());
+    let results = Arc::new(Mutex::new(Vec::<PerFileOutput>::new()));
 
     println!("INFO: Starting parallel processing with Rayon");
     println!("INFO: Releasing the GIL before starting Rayon tasks");
     
     // Release the GIL before starting Rayon tasks to avoid deadlock
-    py.allow_threads(|| {
+    _py.allow_threads(|| {
         println!("DEBUG: Inside allow_threads, GIL is released");
         
         pool.install(|| {
@@ -129,65 +140,21 @@ where
                         Python::with_gil(|py_thread| {
                             println!("DEBUG: Re-acquired GIL for processing file");
                             
-                            match file_operation(py_thread, &content, &config_clone) {
-                                Ok(operation_output) => {
-                                    match &operation_output {
-                                        PerFileOperationOutput::Content(processed_content) => {
-                                            println!("DEBUG: Processed content has {} chars", processed_content.len());
-                                            
-                                            // Release the GIL for file operations
-                                            let _ = py_thread;
-                                            
-                                            if let Some(output_base_path) = &output_path_opt_copy {
-                                                let relative_path = md_file_path.strip_prefix(&input_path_copy).unwrap_or(md_file_path);
-                                                let target_file_path = output_base_path.join(relative_path);
-                                                
-                                                if let Some(parent_dir) = target_file_path.parent() {
-                                                    if !parent_dir.exists() {
-                                                        println!("DEBUG: Creating parent directory: {}", parent_dir.display());
-                                                        if fs::create_dir_all(parent_dir).is_err() {
-                                                            println!("ERROR: Failed to create directory: {}", parent_dir.display());
-                                                            *files_error_count.lock().unwrap() += 1;
-                                                            return;
-                                                        }
-                                                    }
-                                                }
-                                                
-                                                println!("DEBUG: Writing to file: {}", target_file_path.display());
-                                                if fs::write(&target_file_path, processed_content).is_ok() {
-                                                    println!("DEBUG: Successfully wrote file: {}", target_file_path.display());
-                                                    *files_processed_count.lock().unwrap() += 1;
-                                                } else { 
-                                                    println!("ERROR: Failed to write file: {}", target_file_path.display());
-                                                    *files_error_count.lock().unwrap() += 1; 
-                                                }
-                                            } else {
-                                                // Content generated, but no output dir specified
-                                                println!("DEBUG: No output dir specified, just counting processed file");
-                                                *files_processed_count.lock().unwrap() += 1;
-                                            }
-                                        }
-                                        PerFileOperationOutput::TableScanResult(table_scan) => {
-                                            // For TableScanResult, we'll collect them after parallel processing is done
-                                            println!("DEBUG: Processed table scan");
-                                            *files_processed_count.lock().unwrap() += 1;
-                                        },
-                                        PerFileOperationOutput::Empty => {
-                                            println!("DEBUG: Empty operation output");
-                                            *files_processed_count.lock().unwrap() += 1;
-                                        }
-                                    }
+                            match file_operation(py_thread, md_file_path.clone(), &content, &config_clone) {
+                                Ok(Some(output_data)) => {
+                                    results.lock().unwrap().push(output_data);
+                                }
+                                Ok(None) => {
+                                    // Operation completed but produced no data to collect (e.g. direct file write)
                                 }
                                 Err(err) => { 
                                     println!("ERROR: Failed to process file: {}: {:?}", md_file_path.display(), err);
-                                    *files_error_count.lock().unwrap() += 1; 
                                 }
                             }
                         });
                     }
                     Err(err) => { 
                         println!("ERROR: Failed to read file: {}: {:?}", md_file_path.display(), err);
-                        *files_error_count.lock().unwrap() += 1; 
                     }
                 }
             });
@@ -200,23 +167,13 @@ where
     
     println!("DEBUG: GIL re-acquired after Rayon processing");
 
-    // Prepare summary
-    let final_processed = *files_processed_count.lock().unwrap();
-    let final_errors = *files_error_count.lock().unwrap();
+    // Transfer results from Arc<Mutex<Vec<...>>> to Vec<...>
+    let final_results = match Arc::try_unwrap(results) {
+        Ok(mutex) => mutex.into_inner().map_err(|_e| PyValueError::new_err("Mutex for results was poisoned"))?,
+        Err(arc_still_shared) => arc_still_shared.lock().map_err(|_e| PyValueError::new_err("Mutex for results was poisoned during clone"))?.clone(),
+    };
     
-    println!("INFO: Processing completed - {} files processed, {} errors", final_processed, final_errors);
-    
-    let summary = PyDict::new(py);
-    summary.set_item("status", "completed")?;
-    summary.set_item("message", format!("Operation completed on {} files. Errors on {} files.", final_processed, final_errors))?;
-    summary.set_item("files_processed", final_processed)?;
-    summary.set_item("files_with_errors", final_errors)?;
-    summary.set_item("total_files_found", md_files.len())?;
-
-    // No detailed results collection in the core function anymore
-    // This is now handled in the specific batch functions
-
-    Ok(summary.into())
+    Ok(final_results)
 }
 
 // Configuration for batch cleaning operations
@@ -227,7 +184,7 @@ struct BatchCleanOpConfig {
 
 // Configuration for table analysis operations
 struct TableAnalysisConfig {
-    // Empty configuration as we don't need special settings for table analysis
+    min_rows_for_table_start: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -247,275 +204,236 @@ struct FileReportData {
 }
 
 #[pyfunction]
-#[pyo3(signature = (input_dir_str, output_csv_path_str, output_dir_cleaned_files_str, scripts_to_analyze, num_threads))]
+#[pyo3(signature = (input_dir_str, output_csv_path_str, output_dir_cleaned_files_str, scripts_to_keep, num_threads))]
 pub fn generate_analysis_report_for_directory(
     py: Python,
     input_dir_str: &str,
-    output_csv_path_str: &str,
+    output_csv_path_str: Option<&str>,
     output_dir_cleaned_files_str: Option<&str>,
-    scripts_to_analyze: Vec<String>,
+    scripts_to_keep: Vec<String>,
     num_threads: usize,
-) -> PyResult<()> {
-    let input_path = Path::new(input_dir_str);
-    if !input_path.is_dir() {
-        return Err(PyValueError::new_err(format!(
-            "Input path is not a directory: {}", input_dir_str
-        )));
+) -> PyResult<PyObject> {
+    // Initialize script character sets
+    let mut allowed_chars = HashSet::new();
+    for key in &scripts_to_keep {
+        if let Some(script_set) = cleaning_module::SCRIPT_SETS.get(key) {
+            allowed_chars.extend(script_set);
+        }
     }
+    // Ensure essential whitespace is always allowed for cleaning and analysis coherence
+    allowed_chars.insert(' ');
+    allowed_chars.insert('\t');
+    allowed_chars.insert('\n');
 
-    let output_csv_path = Path::new(output_csv_path_str);
-    if let Some(parent) = output_csv_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            PyValueError::new_err(format!(
-                "Failed to create output directory {}: {}",
-                parent.display(),
-                e
-            ))
-        })?;
-    }
-    
-    let md_files: Vec<PathBuf> = WalkDir::new(input_path)
+    let final_allowed_chars_arc = Arc::new(allowed_chars);
+    let unusual_chars_arc = Arc::new(cleaning_module::SCRIPT_SETS.get("unusual").cloned().unwrap_or_default());
+
+    let input_path = PathBuf::from(input_dir_str);
+    let output_cleaned_path_opt = output_dir_cleaned_files_str.map(PathBuf::from);
+
+    // Collect markdown files
+    let md_files: Vec<PathBuf> = WalkDir::new(&input_path)
         .into_iter().filter_map(Result::ok)
         .filter(|e| e.path().is_file() && e.path().extension().is_some_and(|ext| ext == "md"))
         .map(|e| e.path().to_path_buf())
         .collect();
 
     if md_files.is_empty() {
-        println!("INFO: No markdown files found. CSV will be empty except for headers.");
-        // Create CSV with only headers if no files found
-        let mut wtr = Writer::from_path(output_csv_path)
-            .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
-        wtr.write_record(["file_path", "badness_score", "greek_char_percentage", "latin_char_percentage"])
-            .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header: {}", e)))?;
-        wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer: {}", e)))?;
-        return Ok(());
+        println!("INFO: No markdown files found in {}. If CSV output was expected, it will be empty or have headers only.", input_dir_str);
+        // If CSV path is provided, write headers for an empty report
+        if let Some(csv_path) = output_csv_path_str {
+            if !csv_path.is_empty() {
+                 if let Some(parent_dir) = Path::new(csv_path).parent() {
+                    if !parent_dir.as_os_str().is_empty() && !parent_dir.exists() {
+                        fs::create_dir_all(parent_dir).map_err(|e| PyValueError::new_err(format!("Failed to create parent for empty CSV {}: {}", parent_dir.display(), e)))?;
+                    }
+                }
+                let mut wtr = Writer::from_path(csv_path).map_err(|e| PyValueError::new_err(format!("Failed to create CSV for empty report {}: {}", csv_path, e)))?;
+                wtr.write_record(["File Name", "Badness", "Greek Percentage", "Latin Percentage"]).map_err(|e| PyValueError::new_err(format!("CSV header write error for empty report: {}", e)))?;
+                wtr.flush().map_err(|e| PyValueError::new_err(format!("CSV flush error for empty report: {}", e)))?;
+            }
+        }
+        let summary = PyDict::new(py);
+        summary.set_item("output_csv_path", output_csv_path_str.unwrap_or("N/A"))?;
+        summary.set_item("total_issues_found", 0)?; // Corrected from "total_issues_found" to a more generic term
+        summary.set_item("files_with_errors", 0)?;
+        return Ok(summary.into());
     }
-    
-    let thread_count = if num_threads > 0 { num_threads } else { std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4) };
+
+    // Configure thread pool
     let pool = ThreadPoolBuilder::new()
-        .num_threads(thread_count)
+        .num_threads(if num_threads > 0 { num_threads } else { rayon::current_num_threads() })
         .build()
         .map_err(|e| PyValueError::new_err(format!("Failed to build thread pool: {}", e)))?;
 
-    // --- Character Set Preparation ---
-    let mut base_allowed_chars = HashSet::new();
-    // Use scripts_to_analyze to build the initial set of allowed characters
-    for key in &scripts_to_analyze {
-        if let Some(script_set) = cleaning_module::SCRIPT_SETS.get(key) {
-            base_allowed_chars.extend(script_set);
-        }
-    }
-    // Ensure common scripts (punctuation, numbers, common_symbols) are always included.
-    for key_str in ["punctuation", "numbers", "common_symbols"].iter() {
-        let key = key_str.to_string();
-        // Add common scripts if they weren't already in scripts_to_analyze (or just add them unconditionally)
-        if let Some(script_set) = cleaning_module::SCRIPT_SETS.get(&key) {
-            base_allowed_chars.extend(script_set);
-        }
-    }
-    base_allowed_chars.insert(' ');
-    base_allowed_chars.insert('\t');
-    base_allowed_chars.insert('\n');
+    let collected_report_data_arc: Arc<Mutex<Vec<FileReportData>>> = Arc::new(Mutex::new(Vec::new()));
     
-    let allowed_chars_arc = Arc::new(base_allowed_chars);
-    let unusual_chars_arc = Arc::new(cleaning_module::SCRIPT_SETS.get("unusual").cloned().unwrap_or_default());
+    let input_path_arc = Arc::new(input_path); // Used for stripping prefix
+    let output_cleaned_path_opt_arc = Arc::new(output_cleaned_path_opt); // Used for writing cleaned files
 
-    // Scripts for which specific counts are needed (for percentages)
-    // For the CSV, we specifically need Greek and Latin counts.
-    // The `_scripts_for_percentage_and_specific_counts` parameter of `perform_text_analysis`
-    // expects a slice of strings. We will pass ["greek", "latin"].
-    // `calculate_specific_counts` being true ensures these are attempted.
-    // The `SlimTextAnalysisResult` struct has specific fields for greek_char_count and latin_char_count.
-    // So, we just need to ensure `calculate_specific_counts` is true.
-    // The `scripts_to_analyze` argument to *this* function (`generate_analysis_report_for_directory`)
-    // is primarily for constructing `allowed_chars_arc`.
-    // The `perform_text_analysis` will try to populate greek/latin counts if `calculate_specific_counts` is true,
-    // The `scripts_to_analyze` parameter of `perform_text_analysis` is used to decide which scripts to count.
-    // let scripts_for_perform_analysis_arc = Arc::new(vec!["greek".to_string(), "latin".to_string()]); // This is unused and can be removed
-
-    let input_path_arc = Arc::new(input_path.to_path_buf()); 
-    let output_cleaned_path_arc = Arc::new(output_dir_cleaned_files_str.map(PathBuf::from));
-
-    println!("Starting parallel analysis phase...");
     let analysis_phase_start = std::time::Instant::now();
 
-    // Results for CSV will be collected from parallel tasks.
-    let collected_report_data: Vec<FileReportData> = py.allow_threads(|| {
+    py.allow_threads(|| {
         pool.install(|| {
-            md_files
-                .par_iter()
-                .filter_map(|md_file_path| {
-                    let allowed_chars_thread = Arc::clone(&allowed_chars_arc);
-                    let unusual_chars_thread = Arc::clone(&unusual_chars_arc);
-                    let scripts_for_analysis_ref: &[String] = &scripts_to_analyze; 
+            md_files.par_iter().for_each(|md_file_path| {
+                let file_content = match fs::read_to_string(md_file_path) {
+                    Ok(content) => content,
+                    Err(e) => {
+                        eprintln!("Error reading file {}: {}", md_file_path.display(), e);
+                        // Optionally add to an error list if detailed error reporting per file is needed
+                        return; 
+                    }
+                };
 
-                    let local_input_path_arc = Arc::clone(&input_path_arc); 
-                    let local_output_cleaned_path_arc = Arc::clone(&output_cleaned_path_arc);
+                // Clone Arcs for use in this thread
+                let allowed_chars_for_thread = Arc::clone(&final_allowed_chars_arc);
+                let unusual_chars_for_thread = Arc::clone(&unusual_chars_arc);
+                
+                // Perform the text analysis
+                let analysis_result = cleaning_module::perform_text_analysis(
+                    &file_content,
+                    &allowed_chars_for_thread,
+                    &unusual_chars_for_thread,
+                    &scripts_to_keep, // scripts_to_keep is Vec<String>, perform_text_analysis expects &[String]
+                    true, // calculate_specific_counts
+                    None  // min_chars_for_comment_override
+                );
 
-                    match fs::read_to_string(md_file_path) {
-                        Ok(content) => {
-                            let analysis_result = cleaning_module::perform_text_analysis(
-                                &content,
-                                &allowed_chars_thread,
-                                &unusual_chars_thread,
-                                scripts_for_analysis_ref,
-                                true,
-                                None  // min_chars_for_comment (use default in core_clean_text)
-                            );
+                let removed_total_chars = analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars);
 
-                            let removed_total_chars = analysis_result.original_total_chars.saturating_sub(analysis_result.cleaned_total_chars);
-
-                            let mut percentage_greek_cleaned = None;
-                            if let Some(count) = analysis_result.greek_char_count_after_clean {
-                                let cleaned_non_whitespace_after_clean = analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0);
-                                if cleaned_non_whitespace_after_clean > 0 && count > 0 { // Calculate percentage only if both are positive
-                                    percentage_greek_cleaned = Some(count as f64 / cleaned_non_whitespace_after_clean as f64 * 100.0);
-                                } else { // Otherwise, it's 0%
-                                    percentage_greek_cleaned = Some(0.0);
-                                }
-                            } // If count is None, percentage_greek_cleaned remains None
-
-                            let mut percentage_latin_cleaned = None;
-                            if let Some(count) = analysis_result.latin_char_count_after_clean {
-                                let cleaned_non_whitespace_after_clean = analysis_result.cleaned_non_whitespace_chars_after_clean.unwrap_or(0);
-                                if cleaned_non_whitespace_after_clean > 0 && count > 0 { // Calculate percentage only if both are positive
-                                    percentage_latin_cleaned = Some(count as f64 / cleaned_non_whitespace_after_clean as f64 * 100.0);
-                                } else { // Otherwise, it's 0%
-                                    percentage_latin_cleaned = Some(0.0);
-                                }
-                            } // If count is None, percentage_latin_cleaned remains None
-
-                            // Optionally save cleaned file
-                            if let Some(output_base_path) = &*local_output_cleaned_path_arc {
-                                let relative_path = md_file_path.strip_prefix(&*local_input_path_arc).unwrap_or(md_file_path);
-                                let target_file_path = output_base_path.join(relative_path);
-                                
-                                if let Some(parent_dir) = target_file_path.parent() {
-                                    if !parent_dir.exists() {
-                                        if let Err(e) = fs::create_dir_all(parent_dir) {
-                                            return Some(FileReportData {
-                                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                                                original_chars: analysis_result.original_total_chars,
-                                                cleaned_chars: analysis_result.cleaned_total_chars,
-                                                removed_chars_total: removed_total_chars,
-                                                badness_score_non_ws: analysis_result.badness_score_non_ws,
-                                                badness_score_all_chars: analysis_result.badness_score_all_chars,
-                                                greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
-                                                latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
-                                                percentage_greek_cleaned,
-                                                percentage_latin_cleaned,
-                                                cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
-                                                error_message: Some(format!("Failed to create output dir {}: {}", parent_dir.display(), e)),
-                                            });
-                                        }
-                                    }
-                                }
-                                
-                                if let Err(e) = fs::write(&target_file_path, &analysis_result.cleaned_text_content) {
-                                    return Some(FileReportData {
-                                        file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                                        original_chars: analysis_result.original_total_chars,
-                                        cleaned_chars: analysis_result.cleaned_total_chars,
-                                        removed_chars_total: removed_total_chars,
-                                        badness_score_non_ws: analysis_result.badness_score_non_ws,
-                                        badness_score_all_chars: analysis_result.badness_score_all_chars,
-                                        greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
-                                        latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
-                                        percentage_greek_cleaned,
-                                        percentage_latin_cleaned,
-                                        cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
-                                        error_message: Some(format!("Failed to write cleaned file {}: {}", target_file_path.display(), e)),
-                                    });
-                                }
+                let percentage_greek_cleaned: Option<f64> = 
+                    analysis_result.greek_char_count_after_clean.and_then(|greek_count| {
+                        analysis_result.cleaned_non_whitespace_chars_after_clean.map(|total_script_chars| {
+                            if total_script_chars > 0 && greek_count > 0 {
+                                (greek_count as f64 / total_script_chars as f64) * 100.0
+                            } else {
+                                0.0
                             }
+                        })
+                    });
 
-                            Some(FileReportData {
-                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                                original_chars: analysis_result.original_total_chars,
-                                cleaned_chars: analysis_result.cleaned_total_chars,
-                                removed_chars_total: removed_total_chars,
-                                badness_score_non_ws: analysis_result.badness_score_non_ws,
-                                badness_score_all_chars: analysis_result.badness_score_all_chars,
-                                greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
-                                latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
-                                percentage_greek_cleaned,
-                                percentage_latin_cleaned,
-                                cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
-                                error_message: None,
-                            })
-                        }
-                        Err(e) => {
-                            // Error reading the file
-                            Some(FileReportData {
-                                file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
-                                original_chars: 0, cleaned_chars: 0, removed_chars_total: 0, badness_score_non_ws: Some(0.0), badness_score_all_chars: Some(0.0),
-                                greek_chars_cleaned: None, latin_chars_cleaned: None, 
-                                percentage_greek_cleaned: None, percentage_latin_cleaned: None,
-                                cleaned_non_whitespace_chars: None,
-                                error_message: Some(format!("Failed to read file {}: {}", md_file_path.display(), e)),
-                            })
+                let percentage_latin_cleaned: Option<f64> = 
+                    analysis_result.latin_char_count_after_clean.and_then(|latin_count| {
+                        analysis_result.cleaned_non_whitespace_chars_after_clean.map(|total_script_chars| {
+                            if total_script_chars > 0 && latin_count > 0 {
+                                (latin_count as f64 / total_script_chars as f64) * 100.0
+                            } else {
+                                0.0
+                            }
+                        })
+                    });
+                
+                // Optionally save cleaned file
+                if let Some(output_base_path) = &*output_cleaned_path_opt_arc {
+                    let relative_path = md_file_path.strip_prefix(&*input_path_arc).unwrap_or(md_file_path);
+                    let target_file_path = output_base_path.join(relative_path);
+                    
+                    if let Some(parent_dir) = target_file_path.parent() {
+                        if !parent_dir.exists() {
+                            if let Err(e) = fs::create_dir_all(parent_dir) {
+                                eprintln!("ERROR: Failed to create directory {}: {}", parent_dir.display(), e);
+                                // Decide if this error is critical enough to stop or just log
+                            }
                         }
                     }
-                })
-                .collect()
+                    
+                    if let Err(e) = fs::write(&target_file_path, &analysis_result.cleaned_text_content) {
+                        eprintln!("ERROR: Failed to write cleaned file {}: {}", target_file_path.display(), e);
+                    }
+                }
+
+                let report_entry = FileReportData {
+                    file_name: md_file_path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                    original_chars: analysis_result.original_total_chars,
+                    cleaned_chars: analysis_result.cleaned_total_chars,
+                    removed_chars_total: removed_total_chars,
+                    badness_score_non_ws: analysis_result.badness_score_non_ws,
+                    badness_score_all_chars: analysis_result.badness_score_all_chars,
+                    greek_chars_cleaned: analysis_result.greek_char_count_after_clean,
+                    latin_chars_cleaned: analysis_result.latin_char_count_after_clean,
+                    percentage_greek_cleaned,
+                    percentage_latin_cleaned,
+                    cleaned_non_whitespace_chars: analysis_result.cleaned_non_whitespace_chars_after_clean,
+                    error_message: None, // Can be enhanced to capture specific file processing errors
+                };
+                collected_report_data_arc.lock().unwrap().push(report_entry);
+            });
         })
     });
 
     let analysis_phase_duration = analysis_phase_start.elapsed();
     println!("Parallel analysis phase completed in: {:.2?}", analysis_phase_duration);
 
-    // Commenting out CSV writing phase for this test
-    /*
-    println!("Starting CSV writing phase...");
-    */
-    // Restoring CSV writing phase
-    println!("Starting CSV writing phase...");
-    let csv_writing_start = std::time::Instant::now();
-
-    let mut wtr = Writer::from_path(output_csv_path)
-        .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer: {}", e)))?;
+    let mut collected_report_data = Arc::try_unwrap(collected_report_data_arc)
+        .map_err(|_e| PyValueError::new_err("Mutex for report data was poisoned (arc unwrap failed)"))?
+        .into_inner()
+        .map_err(|_e| PyValueError::new_err("Mutex for report data was poisoned (into_inner failed)"))?;
     
-    // Updated CSV header
-    wtr.write_record([
-        "File Name", 
-        "Badness",
-        "Greek Percentage", 
-        "Latin Percentage",
-    ]).map_err(|e| PyValueError::new_err(format!("CSV header write error: {}", e)))?; 
+    collected_report_data.sort_by(|a, b| a.file_name.cmp(&b.file_name));
 
-    let mut sorted_report_data = collected_report_data;
-    sorted_report_data.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    // CSV writing
+    if let Some(csv_path) = output_csv_path_str {
+        if !csv_path.is_empty() {
+            println!("Starting CSV writing phase for {}...", csv_path);
+            let csv_writing_start = std::time::Instant::now();
+            
+            if let Some(parent_dir) = Path::new(csv_path).parent() {
+                 if !parent_dir.as_os_str().is_empty() && !parent_dir.exists() { // Check parent is not empty string
+                    fs::create_dir_all(parent_dir).map_err(|e| PyValueError::new_err(format!(
+                        "Failed to create parent directory '{}' for CSV: {}", parent_dir.display(), e
+                    )))?;
+                }
+            }
 
-    for report_item in &sorted_report_data {
-        let file_name_for_error_log = report_item.file_name.clone();
-        // Updated CSV row writing
-        wtr.write_record([
-            report_item.file_name.clone(),
-            report_item.badness_score_all_chars.map_or_else(|| "N/A".to_string(), |v| format!("{:.4}", v)),
-            report_item.percentage_greek_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
-            report_item.percentage_latin_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
-        ]).map_err(|e| PyValueError::new_err(format!("CSV row write error for {}: {}", file_name_for_error_log, e)))?;
+            match Writer::from_path(csv_path) {
+                Ok(mut wtr) => {
+                    wtr.write_record([
+                        "File Name", 
+                        "Badness",
+                        "Greek Percentage", 
+                        "Latin Percentage",
+                    ]).map_err(|e| PyValueError::new_err(format!("CSV header write error: {}", e)))?; 
+
+                    for report_item in &collected_report_data {
+                        wtr.write_record([
+                            report_item.file_name.clone(),
+                            report_item.badness_score_all_chars.map_or_else(|| "N/A".to_string(), |v| format!("{:.4}", v)),
+                            report_item.percentage_greek_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
+                            report_item.percentage_latin_cleaned.map_or_else(|| "N/A".to_string(), |v| format!("{:.2}%", v)),
+                        ]).map_err(|e| PyValueError::new_err(format!("CSV row write error for {}: {}", report_item.file_name, e)))?;
+                    }
+                    wtr.flush().map_err(|e| PyValueError::new_err(format!("CSV flush error: {}", e)))?;
+                    let csv_writing_duration = csv_writing_start.elapsed();
+                    println!("CSV writing phase completed in: {:.2?}", csv_writing_duration);
+                }
+                Err(e) => {
+                    return Err(PyValueError::new_err(format!("Failed to create CSV writer for path '{}': {}", csv_path, e)));
+                }
+            }
+        } else {
+            println!("CSV output path was an empty string, CSV writing skipped.");
+        }
+    } else {
+        println!("CSV writing skipped as no output path was provided.");
     }
 
-    wtr.flush().map_err(|e| PyValueError::new_err(format!("CSV flush error: {}", e)))?;
-    
-    let csv_writing_duration = csv_writing_start.elapsed();
-    println!("CSV writing phase completed in: {:.2?}", csv_writing_duration);
-    /*
-    println!("CSV writing phase was SKIPPED for this test.");
-    */
-
-    let files_processed_count = sorted_report_data.len();
-    let files_that_had_read_errors_or_processing_errors = md_files.len().saturating_sub(files_processed_count);
+    let files_processed_count = collected_report_data.len();
+    // This count is slightly inaccurate as md_files could have read errors not diminishing this count.
+    // A more accurate error count would require tracking errors during the par_iter.
+    let files_with_potential_read_errors = md_files.len().saturating_sub(files_processed_count); 
 
     println!(
-        "CSV report generated at: {}. Processed: {}, Errors reading files: {}",
-        output_csv_path_str,
+        "CSV report generated at: {}. Files processed for report: {}, Potential file read issues: {}",
+        output_csv_path_str.unwrap_or("N/A (not specified)"),
         files_processed_count,
-        files_that_had_read_errors_or_processing_errors
+        files_with_potential_read_errors // Renamed for clarity
     );
 
-    Ok(())
+    let summary = PyDict::new(py);
+    summary.set_item("output_csv_path", output_csv_path_str.unwrap_or("N/A"))?;
+    summary.set_item("files_processed_for_report", files_processed_count)?; // Clarified name
+    summary.set_item("files_with_potential_read_errors", files_with_potential_read_errors)?; // Clarified name
+    Ok(summary.into())
 }
 
 /// Python-exposed function for batch cleaning of markdown files
@@ -584,34 +502,73 @@ pub fn batch_clean_markdown_files(
         unusual_chars 
     });
 
-    // Define the cleaning operation function - fix how we call core_clean_text
-    let clean_file_op = |_py_thread: Python, content: &str, op_conf: &Arc<BatchCleanOpConfig>| {
-        println!("DEBUG: Processing file with {} characters", content.len());
-        
+    // Define base paths for path manipulation within the closure
+    let input_base_path = PathBuf::from(input_dir);
+    let output_base_path = PathBuf::from(output_dir);
+
+    // Define the cleaning operation
+    let clean_file_op = move |_py_thread: Python, md_file_path: PathBuf, content: &str, op_conf: &Arc<BatchCleanOpConfig>| -> PyResult<Option<PerFileOperationOutput>> {
         let cleaned_content_tuple = cleaning_module::core_clean_text(
             content, 
             &op_conf.allowed_chars, 
             &op_conf.unusual_chars,
-            None // Add missing 4th argument: min_chars_for_comment_override
+            None // min_chars_for_comment_override
         );
         
-        println!("DEBUG: Cleaned content has {} characters", cleaned_content_tuple.0.len());
-        Ok(PerFileOperationOutput::Content(cleaned_content_tuple.0))
+        // Determine output path for the cleaned file
+        let relative_path = md_file_path.strip_prefix(&input_base_path) // Use cloned input_base_path
+            .unwrap_or(&md_file_path); 
+        let target_file_path = output_base_path.join(relative_path); // Use cloned output_base_path
+
+        // Ensure parent directory exists
+        if let Some(parent_dir) = target_file_path.parent() {
+            if !parent_dir.exists() {
+                fs::create_dir_all(parent_dir).map_err(|e| {
+                    PyValueError::new_err(format!("Failed to create directory {}: {}", parent_dir.display(), e))
+                })?;
+            }
+        }
+
+        // Write the cleaned file
+        fs::write(&target_file_path, cleaned_content_tuple.0).map_err(|e| {
+            PyValueError::new_err(format!("Failed to write cleaned file {}: {}", target_file_path.display(), e))
+        })?;
+        
+        Ok(Some(PerFileOperationOutput::OperationSuccess(md_file_path.clone())))
     };
 
-    // Process the directory
-    println!("INFO: Starting directory processing...");
-    let result = process_directory_core::<BatchCleanOpConfig, _>(
-        py,
+    // Process the directory using the core function
+    let results: Vec<PerFileOperationOutput> = process_directory_core::<
+        BatchCleanOpConfig, 
+        _,                  
+        PerFileOperationOutput 
+    >(
+        py, 
         input_dir,
-        Some(output_dir),
+        Some(output_dir), 
         num_threads,
         config,
-        clean_file_op
-    );
+        clean_file_op,
+    )?;
+
+    let mut files_processed_count = 0;
+    let mut files_error_count = 0; 
     
-    println!("INFO: Directory processing completed");
-    result
+    for res_item in results {
+        match res_item {
+            PerFileOperationOutput::OperationSuccess(_) => files_processed_count += 1,
+            PerFileOperationOutput::OperationError(_, _) => files_error_count += 1, 
+            _ => {} 
+        }
+    }
+
+    let summary = pyo3::types::PyDict::new(py); 
+    summary.set_item("status", "completed")?;
+    summary.set_item("message", format!("Batch cleaning completed. {} files processed. See output directory.", files_processed_count))?;
+    summary.set_item("files_processed", files_processed_count)?;
+    summary.set_item("files_with_errors", files_error_count)?;
+
+    Ok(summary.into())
 }
 
 /// Python-exposed function for processing directory with original behavior
@@ -743,5 +700,196 @@ pub fn batch_generate_table_summary_csv(
     wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV: {}", e)))?;
 
     println!("Table summary CSV report generated at: {}", output_csv_path_str);
+    Ok(())
+}
+
+// For detailed table issue reporting by batch_generate_detailed_table_report_csv
+impl Default for TableAnalysisConfig {
+    fn default() -> Self {
+        TableAnalysisConfig {
+            min_rows_for_table_start: 2, // Default value
+        }
+    }
+}
+
+// Function to generate a detailed CSV report of table issues (file_path, issue_description, start_line, end_line)
+#[pyfunction]
+pub fn batch_generate_detailed_table_report_csv(
+    py: Python,
+    input_dir_str: &str,
+    output_csv_path_str: &str,
+    num_threads: usize,
+) -> PyResult<PyObject> { // Return PyDict summary
+    println!("Starting detailed table report generation for CSV: {}", output_csv_path_str);
+
+    // Ensure the output directory for the CSV exists
+    if let Some(parent_dir) = Path::new(output_csv_path_str).parent() {
+        if !parent_dir.exists() {
+            fs::create_dir_all(parent_dir).map_err(|e| PyValueError::new_err(format!("Failed to create parent directory for CSV {}: {}", parent_dir.display(), e)))?;
+        }
+    }
+    
+    let mut wtr = csv::WriterBuilder::new()
+        .has_headers(false) // Explicitly disable automatic header writing by serialize
+        .from_path(output_csv_path_str)
+        .map_err(|e| PyValueError::new_err(format!("Failed to create CSV writer for {}: {}", output_csv_path_str, e)))?;
+
+    // Manually write header once.
+    wtr.write_record(&["file_path", "issue_description", "table_start_line", "table_end_line"])
+        .map_err(|e| PyValueError::new_err(format!("Failed to write CSV header to {}: {}", output_csv_path_str, e)))?;
+    
+    // Use a dummy config as analyze_table_file_op doesn't require a specific one.
+    let dummy_config = Arc::new(()); 
+
+    let operation_fn = move |py_token: Python, file_path: PathBuf, content: &str, _config: &Arc<()>| -> PyResult<Option<PerFileOperationOutput>> {
+        let relative_path_str = path_to_str(&file_path); 
+        match table_analysis_module::analyze_table_file_op(py_token, content) { // Call analyze_table_file_op
+            Ok(scan_result) => {
+                let issues_for_file: Vec<DetailedTableIssueReportEntry> = scan_result.issues.into_iter().map(|issue_obj| {
+                    // Assuming issue_obj is Py<TableIssue>, need to borrow to access fields
+                    let issue = issue_obj.as_ref(py_token).borrow();
+                    DetailedTableIssueReportEntry {
+                        file_path: relative_path_str.clone(),
+                        issue_description: issue.description.clone(), // Clone if String
+                        table_start_line: issue.start_line,
+                        table_end_line: issue.end_line,
+                    }
+                }).collect();
+                if issues_for_file.is_empty() {
+                    Ok(None) 
+                } else {
+                    Ok(Some(PerFileOperationOutput::DetailedTableIssues(issues_for_file)))
+                }
+            }
+            Err(e) => {
+                let err_msg = format!("Failed to analyze tables in {}: {}", relative_path_str, e);
+                println!("ERROR: {}", err_msg);
+                Err(PyValueError::new_err(err_msg))
+            }
+        }
+    };
+    
+    let processed_results = process_directory_core(
+        py,
+        input_dir_str,
+        None, 
+        num_threads,
+        dummy_config, // Pass the dummy config
+        operation_fn, 
+    )?;
+    
+    let mut total_issues_found = 0;
+    let mut files_with_issues = 0;
+
+    for file_results_enum in processed_results {
+        if let PerFileOperationOutput::DetailedTableIssues(entries) = file_results_enum {
+            if !entries.is_empty() {
+                files_with_issues += 1;
+            }
+            for entry in entries {
+                wtr.serialize(entry).map_err(|e| PyValueError::new_err(format!("Failed to serialize detailed issue to CSV: {}", e)))?;
+                total_issues_found += 1;
+            }
+        } else {
+            // Log if a file produced an unexpected PerFileOperationOutput variant or an error handled internally by process_directory_core
+            // println!("WARN: Received unexpected output variant or error for a file.");
+        }
+    }
+
+    wtr.flush().map_err(|e| PyValueError::new_err(format!("Failed to flush CSV writer for {}: {}", output_csv_path_str, e)))?;
+    println!("Detailed table report generation complete. Total issues found: {}, Files with issues: {}", total_issues_found, files_with_issues);
+
+    let summary = PyDict::new(py);
+    summary.set_item("output_csv_path", output_csv_path_str)?;
+    summary.set_item("total_issues_found", total_issues_found)?;
+    summary.set_item("files_with_issues", files_with_issues)?;
+    Ok(summary.into())
+}
+
+// --- New Batch Function for Table Removal ---
+#[pyfunction]
+#[pyo3(signature = (input_markdown_dir_str, detailed_report_csv_path_str, output_processed_md_dir_str, num_threads))]
+pub fn batch_remove_tables_from_files(
+    py: Python,
+    input_markdown_dir_str: &str,
+    detailed_report_csv_path_str: &str,
+    output_processed_md_dir_str: &str,
+    num_threads: usize,
+) -> PyResult<()> {
+    // println!("Starting batch table removal...");
+
+    // 1. Load table locations from the CSV report
+    let table_locations_map = table_remover_module::load_table_locations_from_csv(detailed_report_csv_path_str)
+        .map_err(|e| PyValueError::new_err(format!("Failed to load table locations from CSV {}: {}", detailed_report_csv_path_str, e)))?;
+    
+    let arc_table_locations_map = Arc::new(table_locations_map);
+    let input_base_path = PathBuf::from(input_markdown_dir_str);
+    let output_base_path = PathBuf::from(output_processed_md_dir_str);
+
+    // Ensure output directory exists (process_directory_core might also do this, but good to be sure)
+    fs::create_dir_all(&output_base_path).map_err(|e|
+        PyValueError::new_err(format!("Failed to create output directory {}: {}", output_base_path.display(), e))
+    )?;
+
+    // Define the file operation for table removal
+    let file_op = move |_py_thread: Python, md_file_path: PathBuf, content: &str, config: &Arc<HashMap<PathBuf, Vec<table_remover_module::LineRange>>>| -> PyResult<Option<()>> {
+        // Determine relative path for looking up in map and for output path
+        let relative_path = md_file_path.strip_prefix(&input_base_path)
+            .unwrap_or(&md_file_path); // Fallback to full path if strip_prefix fails (should not happen if md_file_path is from input_dir)
+        
+        let target_output_file_path = output_base_path.join(relative_path);
+
+        if let Some(parent_dir) = target_output_file_path.parent() {
+            if !parent_dir.exists() {
+                fs::create_dir_all(parent_dir).map_err(|e| 
+                    PyValueError::new_err(format!("Failed to create parent directory for {}: {}", target_output_file_path.display(), e))
+                )?;
+            }
+        }
+        
+        // Check if this file has tables to remove
+        // The keys in `config` (our `table_locations_map`) might be absolute or relative.
+        // We need to ensure consistent lookup. `load_table_locations_from_csv` stores paths as read.
+        // For robustness, one might normalize paths before inserting into map and during lookup.
+        // Assuming paths in CSV are relative to `input_markdown_dir_str` or absolute and match `md_file_path`.
+        // For simplicity, let's assume `md_file_path` (which is absolute) is what we should use for lookup if CSV has absolute.
+        // Or, if CSV paths are relative to `input_markdown_dir_str`, we'd use `relative_path`.
+        // The current `load_table_locations_from_csv` uses `PathBuf::from(record.file_path)`.
+        // Let's try looking up with the absolute path `md_file_path`.
+
+        if let Some(locations_for_this_file) = config.get(&md_file_path) {
+            if !locations_for_this_file.is_empty() {
+                let modified_content = table_remover_module::remove_tables_from_content(content, locations_for_this_file);
+                fs::write(&target_output_file_path, modified_content).map_err(|e| 
+                    PyValueError::new_err(format!("Failed to write modified file {}: {}", target_output_file_path.display(), e))
+                )?;
+            } else {
+                // File was in report, but no locations (empty vec), copy verbatim
+                fs::write(&target_output_file_path, content).map_err(|e| 
+                    PyValueError::new_err(format!("Failed to copy (no-op) file {}: {}", target_output_file_path.display(), e))
+                )?;
+            }
+        } else {
+            // File not in report, copy verbatim
+            fs::write(&target_output_file_path, content).map_err(|e| 
+                PyValueError::new_err(format!("Failed to copy (verbatim) file {}: {}", target_output_file_path.display(), e))
+            )?;
+        }
+        Ok(None) // No data to collect, side effect is file writing
+    };
+
+    // Use process_directory_core to iterate and apply the operation.
+    // The output_dir_str for process_directory_core is the output_processed_md_dir_str,
+    // which it can use to create the base output directory.
+    let _: Vec<()> = process_directory_core( // Result type is Vec<() because file_op returns Option<()
+        py,
+        input_markdown_dir_str,
+        Some(output_processed_md_dir_str), // Pass output dir so core can create it if needed
+        num_threads,
+        arc_table_locations_map, // Pass the map as config
+        file_op,
+    )?;
+    
+    // println!("Batch table removal completed. Processed files are in: {}", output_processed_md_dir_str);
     Ok(())
 }

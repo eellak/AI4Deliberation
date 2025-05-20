@@ -11,6 +11,7 @@ use memchr::memmem; // For optimizing comment search in strip_tags_custom
 
 // Constants
 const TEXT_MISSING_COMMENT: &str = "<!-- text-missing -->";
+const TABLE_REMOVED_COMMENT: &str = "<!-- table-removed -->"; // Added for badness adjustment
 
 lazy_static! {
     // Regular expressions for detection (compiled once) - Most are now unused
@@ -37,6 +38,7 @@ lazy_static! {
         for code in 0x03F0..0x0400 { if let Some(c) = std::char::from_u32(code) { greek_chars.insert(c); }}
         let accented_greek = "άέήίόύώΆΈΉΊΌΎΏϊϋΪΫΐΰ";
         for c in accented_greek.chars() { greek_chars.insert(c); }
+        greek_chars.insert('\u{00B5}'); // Add MICRO SIGN
         map.insert("greek".to_string(), greek_chars);
         
         let french_specific = "àâçéèêëîïôùûüÿæœÀÂÇÉÈÊËÎÏÔÙÛÜŸÆŒ«»";
@@ -287,7 +289,31 @@ pub fn core_clean_text(text: &str, allowed_chars: &HashSet<char>, unusual_chars_
         }
         cleaned_output
     };
-    (final_cleaned_text, original_chars_for_badness, kept_chars_for_badness)
+
+    // Adjust kept_chars_for_badness by subtracting the length of our specific placeholder comments.
+    // These comments, if present in cleaned_output, would have contributed to kept_chars_for_badness.
+    // We want to penalize their presence effectively by considering them "removed" for badness calculation.
+    
+    // Note: TEXT_MISSING_COMMENT is added to cleaned_output directly when BAD_LINE_AC matches.
+    // Lines producing TEXT_MISSING_COMMENT do *not* contribute to original_chars_for_badness or kept_chars_for_badness.
+    // So, counting TEXT_MISSING_COMMENT in cleaned_output for subtraction here is only relevant if it could appear through other means
+    // or if a line *containing* "<!-- text-missing -->" (pre-existing) was processed normally and kept.
+    // For safety and to cover pre-existing identical strings, we count it.
+    // The primary target for adjustment is TABLE_REMOVED_COMMENT, which *is* part of normally processed lines in Stage 4.
+
+    let num_text_missing_comments = final_cleaned_text.matches(TEXT_MISSING_COMMENT).count();
+    let num_table_removed_comments = final_cleaned_text.matches(TABLE_REMOVED_COMMENT).count();
+
+    let total_chars_in_placeholder_comments = 
+        (num_text_missing_comments * TEXT_MISSING_COMMENT.len()) +
+        (num_table_removed_comments * TABLE_REMOVED_COMMENT.len());
+    
+    let adjusted_kept_chars_for_badness = kept_chars_for_badness.saturating_sub(total_chars_in_placeholder_comments);
+
+    // Ensure the println! is correctly placed if it was for debugging, or remove if not needed.
+    // Example: println!("core_clean_text: Original kept: {}, Adjustment: {}, Adjusted kept: {}", kept_chars_for_badness, total_chars_in_placeholder_comments, adjusted_kept_chars_for_badness);
+
+    (final_cleaned_text, original_chars_for_badness, adjusted_kept_chars_for_badness)
 }
 
 /// Python-exposed function to clean a single string
