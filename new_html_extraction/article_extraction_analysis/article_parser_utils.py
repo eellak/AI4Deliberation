@@ -540,118 +540,81 @@ def extract_all_main_articles_with_content(content_text):
     return output_chunks
 
 
+# --- REFACTORED: check_overall_article_sequence_integrity ---
 def check_overall_article_sequence_integrity(content_text: str, max_consecutive_zero_steps: int = 5):
     """
-    Analyzes the entire content_text to find all main article declarations and checks
-    if they form a single, continuous sequence.
-
-    Args:
-        content_text (str): The text to analyze.
-        max_consecutive_zero_steps (int): The maximum number of times an article number
-                                          can be the same as the previous one consecutively
-                                          and still be considered part of a continuous sequence.
-
-    Returns:
-        dict: A dictionary containing:
-            - 'forms_single_continuous_sequence' (bool): True if all detected articles
-              form one continuous sequence, False otherwise.
-            - 'detected_articles_details' (list): List of dicts, each for a detected article:
-              {'number': int, 'raw_line': str, 'line_index': int}.
-            - 'count_of_detected_articles' (int): Total number of main article headers found.
+    Analyzes content_text to find all main article declarations (using the new helper _get_true_main_article_header_locations)
+    and checks if they form a single, continuous sequence.
     """
-    if not content_text or not isinstance(content_text, str):
+    true_headers = _get_true_main_article_header_locations(content_text)
+
+    if not true_headers:
         return {
-            'forms_single_continuous_sequence': True, # Or False, depending on desired strictness for empty. Let's say True.
+            'forms_single_continuous_sequence': True, # No articles, or 1 article, is continuous.
             'detected_articles_details': [],
             'count_of_detected_articles': 0
         }
 
-    lines = content_text.splitlines()
-    detected_articles_details = []
+    # Transform true_headers into the format expected by this function's original return
+    # and for the continuity check.
+    # `detected_articles_details` should reflect each instance of an article number, even from ranges.
+    detected_articles_details_for_report = []
+    numbers_for_continuity_check = []
 
-    # For quote tracking
-    open_quotes_total_accumulator = 0
-    close_quotes_total_accumulator = 0
-
-    for i, line_text in enumerate(lines):
-        stripped_line = line_text.strip()
-        parsed_header = parse_article_header(stripped_line)
+    for header_info in true_headers:
+        # The 'article_number' in header_info is already the specific number (e.g. 1, 2, or 3 from range 1-3)
+        # 'original_line_text' is the raw line that contained the possibly ranged header.
+        # 'line_index' is the index of that raw line.
+        detail = {
+            'number': header_info['article_number'],
+            'raw_line': header_info['original_line_text'],
+            'line_index': header_info['line_index']
+            # 'is_range_expansion' can be added if useful for the report by uncommenting next line
+            # 'is_range_expansion': header_info['is_range_expansion'] 
+        }
+        # Clarify raw_line for expanded ranges if desired for the report
+        if header_info['is_range_expansion']:
+            detail['raw_line'] += f" (Expanded to {header_info['article_number']} from original header on line {header_info['line_index']})"
         
-        is_quoted_header = False
-        if parsed_header and parsed_header.get('main_number') is not None and parsed_header.get('paragraph_id') is None:
-            match_obj = parsed_header.pop('match_obj')
-            strip_offset = len(line_text) - len(line_text.lstrip())
-            start_of_match_text_in_stripped = stripped_line.find(match_obj.group(0))
-            if start_of_match_text_in_stripped == -1:
-                 actual_match_start_in_original = strip_offset
-            else:
-                 actual_match_start_in_original = strip_offset + start_of_match_text_in_stripped
-            
-            if _is_header_effectively_quoted(line_text, actual_match_start_in_original,
-                                              open_quotes_total_accumulator, close_quotes_total_accumulator):
-                is_quoted_header = True
-                logging.debug(f"Line {i} header '{stripped_line}' (integrity check) considered quoted.")
+        detected_articles_details_for_report.append(detail)
+        numbers_for_continuity_check.append(header_info['article_number'])
 
-            if not is_quoted_header:
-                start_num = parsed_header['main_number']
-                end_num = parsed_header.get('main_number_end') # Get potential end number
-                
-                if end_num is not None and end_num >= start_num:
-                    # Expand the range
-                    for num_in_range in range(start_num, end_num + 1):
-                        detected_articles_details.append({
-                            'number': num_in_range,
-                            # For ranges, raw_line and line_index refer to the original header line
-                            'raw_line': stripped_line + f" (Expanded from range, part {num_in_range - start_num + 1})", 
-                            'line_index': i,
-                            'is_range_expansion': True
-                        })
-                else:
-                    # Single article or invalid range (end_num < start_num)
-                    detected_articles_details.append({
-                        'number': start_num,
-                        'raw_line': stripped_line,
-                        'line_index': i,
-                        'is_range_expansion': False
-                    })
-
-        # Update quote counts from the full original line for the next iteration
-        open_quotes_total_accumulator += line_text.count('«')
-        close_quotes_total_accumulator += line_text.count('»')
-
-    count_of_effective_articles = len(detected_articles_details)
+    count_of_effective_articles = len(numbers_for_continuity_check)
 
     if count_of_effective_articles <= 1:
-        # 0 or 1 article is trivially a single continuous sequence.
         return {
             'forms_single_continuous_sequence': True,
-            'detected_articles_details': detected_articles_details, # Return details with expanded ranges if any
-            'count_of_detected_articles': count_of_effective_articles # This now counts expanded articles
+            'detected_articles_details': detected_articles_details_for_report,
+            'count_of_detected_articles': count_of_effective_articles
         }
 
-    # Check continuity for the full list of detected article numbers (now including expanded ranges)
-    numbers_list = [art['number'] for art in detected_articles_details]
-    
-    is_continuous = True # Assume true initially
+    # Check continuity on numbers_for_continuity_check
+    is_continuous = True 
     consecutive_zero_steps_count = 0
-    for i in range(len(numbers_list) - 1):
-        current_num = numbers_list[i]
-        next_num = numbers_list[i+1]
+    for i in range(len(numbers_for_continuity_check) - 1):
+        current_num = numbers_for_continuity_check[i]
+        next_num = numbers_for_continuity_check[i+1]
+
+        # Ensure numbers are integers for comparison; they should be from 'main_number'
+        if not (isinstance(current_num, int) and isinstance(next_num, int)):
+            logging.warning(f"Non-integer article numbers found in sequence: {current_num}, {next_num}. Continuity check may be unreliable.")
+            is_continuous = False # Or handle as error, but for now, mark non-continuous
+            break
 
         if next_num == current_num + 1:
-            consecutive_zero_steps_count = 0  # Reset counter
+            consecutive_zero_steps_count = 0
         elif next_num == current_num:
             consecutive_zero_steps_count += 1
             if consecutive_zero_steps_count > max_consecutive_zero_steps:
                 is_continuous = False
                 break
-        else:
-            is_continuous = False # Gap or out of order (e.g. N+2, N-1, or a new '1' after '5')
+        else: # Gap or out of order
+            is_continuous = False
             break
             
     return {
         'forms_single_continuous_sequence': is_continuous,
-        'detected_articles_details': detected_articles_details,
+        'detected_articles_details': detected_articles_details_for_report,
         'count_of_detected_articles': count_of_effective_articles
     }
 
@@ -681,7 +644,8 @@ def calculate_average_word_count_of_true_articles(db_entry_content: str) -> floa
         return 0.0
 
     true_articles = extract_all_main_articles_with_content(db_entry_content)
-    num_true_articles = len(true_articles)
+    article_type_chunks = [chunk for chunk in true_articles if chunk['type'] == 'article']
+    num_true_articles = len(article_type_chunks)
 
     if num_true_articles <= 1:
         # This also covers the case where db_entry_content has no article headers at all,
@@ -697,6 +661,106 @@ def calculate_average_word_count_of_true_articles(db_entry_content: str) -> floa
             return float(total_word_count_for_all_true_articles) / num_true_articles
         else: # Should not be reached, but as a fallback
             return 0.0
+
+# --- NEW INTERNAL HELPER FUNCTION ---
+def _get_true_main_article_header_locations(content_text: str):
+    """
+    Core internal function to find all valid, non-quoted main article headers.
+    Returns a list of dictionaries, each detailing a detected article start point.
+    Handles range expansion (e.g., "Άρθρο 1-3" produces entries for 1, 2, and 3).
+    """
+    # Ensure logging is configured if this util is run standalone or imported early
+    # This is a bit of a heavy-handed way for a util, but for deep debugging:
+    # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - In Func %(funcName)s - %(message)s')
+    # Preferring that the calling script (orchestrator) sets up logging.
+    # We can use a logger specific to this module if needed:
+    # util_logger = logging.getLogger("article_parser_utils_detail")
+    # For now, rely on root logger or whatever the orchestrator sets for DEBUG level.
+
+    if not content_text or not isinstance(content_text, str):
+        logging.debug("_get_true_main_article_header_locations: Received empty or invalid content_text.")
+        return []
+
+    lines = content_text.splitlines()
+    true_headers = []
+    open_quotes_total_accumulator = 0
+    close_quotes_total_accumulator = 0
+    logging.debug(f"_get_true_main_article_header_locations: Processing {len(lines)} lines of content.")
+
+    for i, line_text in enumerate(lines):
+        logging.debug(f"_get_true_main_article_header_locations: Line {i}: '{line_text}'")
+        stripped_line_for_parse = line_text.strip()
+        
+        parsed_data = parse_article_header(stripped_line_for_parse) 
+        logging.debug(f"_get_true_main_article_header_locations: Line {i} parse_article_header result: {parsed_data}")
+        
+        is_effectively_quoted = False
+        if parsed_data and parsed_data.get('main_number') is not None and parsed_data.get('paragraph_id') is None:
+            logging.debug(f"_get_true_main_article_header_locations: Line {i} is a candidate main article header: '{stripped_line_for_parse}'")
+            parsed_data_copy_for_storage = parsed_data.copy()
+            match_obj = parsed_data.pop('match_obj') 
+            
+            strip_offset = len(line_text) - len(line_text.lstrip())
+            actual_match_start_in_original = strip_offset + match_obj.start()
+            logging.debug(f"_get_true_main_article_header_locations: Line {i} - Accumulated quotes before this line: Opens={open_quotes_total_accumulator}, Closes={close_quotes_total_accumulator}")
+
+            if _is_header_effectively_quoted(line_text, actual_match_start_in_original,
+                                             open_quotes_total_accumulator, close_quotes_total_accumulator):
+                is_effectively_quoted = True
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} header '{stripped_line_for_parse}' determined to be QUOTED.")
+            else:
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} header '{stripped_line_for_parse}' determined to be NOT QUOTED.")
+            
+            if not is_effectively_quoted:
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} - ADDING non-quoted header: {parsed_data_copy_for_storage}")
+                start_num = parsed_data_copy_for_storage['main_number'] 
+                end_num_str = parsed_data_copy_for_storage.get('number_end_digit')
+                end_num = None
+                if end_num_str:
+                    try:
+                        end_num = int(end_num_str)
+                    except ValueError:
+                        logging.warning(f"_get_true_main_article_header_locations: Line {i} - Could not parse end_num_str '{end_num_str}' to int.")
+                
+                if end_num is not None and end_num_str and end_num >= start_num: # Valid range
+                    logging.debug(f"_get_true_main_article_header_locations: Line {i} - Handling as range from {start_num} to {end_num}.")
+                    for num_in_range in range(start_num, end_num + 1):
+                        true_headers.append({
+                            'line_index': i,
+                            'original_line_text': line_text, 
+                            'parsed_header_details_copy': parsed_data_copy_for_storage, 
+                            'article_number': num_in_range, 
+                            'is_range_expansion': True
+                        })
+                        logging.debug(f"_get_true_main_article_header_locations: Line {i} - Added expanded article number {num_in_range} from range.")
+                else: # Single article or invalid range
+                    true_headers.append({
+                        'line_index': i,
+                        'original_line_text': line_text, 
+                        'parsed_header_details_copy': parsed_data_copy_for_storage,
+                        'article_number': start_num,
+                        'is_range_expansion': False
+                    })
+                    logging.debug(f"_get_true_main_article_header_locations: Line {i} - Added single article number {start_num}.")
+            else:
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} - SKIPPING quoted header: '{stripped_line_for_parse}'")
+        else:
+            if parsed_data: 
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} - Parsed as a header '{stripped_line_for_parse}', but not a main article (e.g., has paragraph_id or no main_number). Details: {parsed_data}")
+            else:
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} - Not parsed as any article header: '{stripped_line_for_parse}'")
+        
+        # Update quote counts based on the *entire current line_text*
+        opens_on_current_line = line_text.count('«')
+        closes_on_current_line = line_text.count('»')
+        open_quotes_total_accumulator += opens_on_current_line
+        close_quotes_total_accumulator += closes_on_current_line
+        logging.debug(f"_get_true_main_article_header_locations: Line {i} - Quote update: Opens on line={opens_on_current_line}, Closes on line={closes_on_current_line}. Total Accum: Opens={open_quotes_total_accumulator}, Closes={close_quotes_total_accumulator}")
+    
+    logging.debug(f"_get_true_main_article_header_locations: Completed processing all lines. Found {len(true_headers)} true headers (after range expansion). Sorting...")
+    true_headers.sort(key=lambda x: (x['line_index'], x['article_number']))
+    logging.debug(f"_get_true_main_article_header_locations: Sorted true_headers: {true_headers}")
+    return true_headers
 
 # --- Debugging / Example Usage ---
 if __name__ == '__main__':

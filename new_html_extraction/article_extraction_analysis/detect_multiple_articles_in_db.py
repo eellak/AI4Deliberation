@@ -11,9 +11,10 @@ import logging
 import csv
 import os
 import sys # Added for csv.field_size_limit
+import json # Added for JSON output
 
 # Import the new utility function and the existing parser for detailed inspection if needed
-from article_parser_utils import check_overall_article_sequence_integrity, parse_article_header, calculate_average_word_count_of_true_articles # Added calculate_average_word_count_of_true_articles
+from article_parser_utils import check_overall_article_sequence_integrity, parse_article_header, calculate_average_word_count_of_true_articles, extract_all_main_articles_with_content
 # Removed extract_article_sequences and check_article_number_sequence_continuity as their logic is now encapsulated or replaced
 
 # --- Configuration ---
@@ -29,7 +30,7 @@ CONSULTATION_ID_COLUMN_NAME = "consultation_id"
 # ARTICLE_LINE_PATTERN = re.compile(r"^\\s*Άρθρο\\s*(\\d+)(?:[\\s.]|$)", re.IGNORECASE) # REMOVED
 
 # Output CSV file name
-OUTPUT_CSV_FILE = "crammed_articles_integrity_report_enhanced_v3.csv" # Changed output filename for v3
+OUTPUT_CSV_FILE = "crammed_articles_integrity_report_enhanced_v4.csv" # MODIFIED for v4
 
 # --- !!! DEBUGGING SWITCH !!! ---
 # Set this to an article DB ID (int or list of ints) to inspect its content and sequence integrity.
@@ -106,9 +107,30 @@ def main():
                     if integrity_result['detected_articles_details']:
                         logging.info("  Detected articles details:")
                         for art_detail in integrity_result['detected_articles_details']:
-                            logging.info(f"    - Number: {art_detail['number']}, Line Idx: {art_detail['line_index']}, Text: \\\"{art_detail['raw_line']}\\\"")
+                            logging.info(f"    - Number: {art_detail['number']}, Line Idx: {art_detail['line_index']}, Text: \"{art_detail['raw_line']}\"")
                     else:
                         logging.info("  No article headers detected.")
+                    
+                    # Also show structured content for inspection mode
+                    if integrity_result['count_of_detected_articles'] > 0:
+                        structured_content_chunks = extract_all_main_articles_with_content(content_to_inspect)
+                        simplified_chunks_for_json = []
+                        for chunk in structured_content_chunks:
+                            if chunk['type'] == 'preamble':
+                                simplified_chunks_for_json.append({
+                                    'type': 'preamble',
+                                    'content_text': chunk['content_text']
+                                })
+                            elif chunk['type'] == 'article':
+                                simplified_chunks_for_json.append({
+                                    'type': 'article',
+                                    'article_number': chunk.get('article_number'),
+                                    'title_line': chunk.get('title_line'),
+                                    'content_text': chunk['content_text']
+                                })
+                        logging.info(f"  Structured Content JSON (for article_db_id {article_id}):")
+                        logging.info(json.dumps(simplified_chunks_for_json, indent=2, ensure_ascii=False))
+
                 else:
                     logging.warning(f"Article DB ID {article_id} not found for inspection.")
         except sqlite3.Error as e:
@@ -146,15 +168,33 @@ def main():
             integrity_result = check_overall_article_sequence_integrity(content)
             count_detected = integrity_result['count_of_detected_articles']
             
-            # We are interested in entries that *could* have cramming issues, 
-            # meaning they have more than one article declaration.
+            article_structure_json_str = None # Initialize for each row
             if count_detected > 1:
                 relevant_entries_found += 1
                 consultation_info = fetch_consultation_details(conn, consultation_id)
-                avg_word_count = calculate_average_word_count_of_true_articles(content) # Calculate average word count
+                avg_word_count = calculate_average_word_count_of_true_articles(content) 
                 
                 detected_numbers = [str(art['number']) for art in integrity_result['detected_articles_details']]
                 detected_titles = [art['raw_line'] for art in integrity_result['detected_articles_details']]
+
+                # MODIFIED: Generate JSON for article structure
+                structured_content_chunks = extract_all_main_articles_with_content(content)
+                simplified_chunks_for_json = []
+                for chunk in structured_content_chunks:
+                    if chunk['type'] == 'preamble':
+                        simplified_chunks_for_json.append({
+                            'type': 'preamble',
+                            'content_text': chunk['content_text']
+                        })
+                    elif chunk['type'] == 'article':
+                        simplified_chunks_for_json.append({
+                            'type': 'article',
+                            'article_number': chunk.get('article_number'), # From extract_all_main_articles
+                            'title_line': chunk.get('title_line'),     # From extract_all_main_articles
+                            'content_text': chunk['content_text']      # From extract_all_main_articles
+                        })
+                article_structure_json_str = json.dumps(simplified_chunks_for_json, ensure_ascii=False)
+                # END MODIFICATION
 
                 report_data.append({
                     'consultation_id': consultation_id,
@@ -162,14 +202,14 @@ def main():
                     'consultation_url': consultation_info['url'],
                     'article_db_id': article_db_id,
                     'count_of_detected_articles': count_detected,
-                    'avg_word_count_true_articles': f"{avg_word_count:.2f}", # Added new field
+                    'avg_word_count_true_articles': f"{avg_word_count:.2f}",
                     'detected_article_numbers_list': ",".join(detected_numbers),
                     'detected_article_titles_list': "; ".join(detected_titles),
                     'forms_single_continuous_sequence': integrity_result['forms_single_continuous_sequence'],
-                    'db_entry_content': content # Added new field
+                    'db_entry_content': content, 
+                    'article_structure_json': article_structure_json_str # MODIFIED: Added new field
                 })
 
-                # Optional: Log if the sequence is NOT continuous for immediate feedback
                 if not integrity_result['forms_single_continuous_sequence']:
                     logging.warning(
                         f"DB ID {article_db_id} (Consultation: {consultation_id}) has {count_detected} articles "
@@ -185,16 +225,17 @@ def main():
         output_file_path = os.path.join(os.path.dirname(__file__) or '.', OUTPUT_CSV_FILE)
         if report_data:
             logging.info(f"Writing {len(report_data)} relevant entries to {output_file_path}")
+            # MODIFIED: Added new fieldname
             fieldnames = ['consultation_id', 'consultation_title', 'consultation_url', 
                           'article_db_id', 'count_of_detected_articles', 
-                          'avg_word_count_true_articles', # Added new fieldname
+                          'avg_word_count_true_articles', 
                           'detected_article_numbers_list', 'detected_article_titles_list',
                           'forms_single_continuous_sequence',
-                          'db_entry_content'] # Added new fieldname
+                          'db_entry_content', 'article_structure_json'] 
             with open(output_file_path, 'w', newline='', encoding='utf-8') as csvfile:
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
-                writer.writerows(report_data) # Use writerows for list of dicts
+                writer.writerows(report_data) 
             logging.info(f"CSV report successfully written to {output_file_path}.")
         else:
             logging.info("No relevant entries (with >1 detected articles) found to write to CSV.")

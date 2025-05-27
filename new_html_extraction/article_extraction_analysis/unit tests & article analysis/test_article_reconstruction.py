@@ -9,13 +9,45 @@ import logging
 import os
 import csv # Added for CSV reading
 import random # Added for random selection
+import unittest
+import sys
+import json
+import pandas as pd # Added for CSV reading
+
+# Correctly add the path to article_parser_utils.py
+# Assuming the script is run from the workspace root /mnt/data/AI4Deliberation
+# or that os.getcwd() during test execution correctly reflects a known base
+WORKSPACE_ROOT = "/mnt/data/AI4Deliberation" # Hardcode for clarity if needed, or derive carefully
+# For robustness if __file__ is available and reliable:
+# current_script_dir = os.path.dirname(os.path.abspath(__file__))
+# utils_dir_path = os.path.abspath(os.path.join(current_script_dir, "..")) # This goes up to article_extraction_analysis
+
+# Let's try a path relative to a known structure, assuming the test is in 
+# .../unit tests & article analysis/
+# and utils are in .../ (one level up from tests folder)
+utils_dir_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+if utils_dir_path not in sys.path:
+    sys.path.insert(0, utils_dir_path)
+
+# Check if the path leads to the expected file as a debug step
+# expected_util_file = os.path.join(utils_dir_path, "article_parser_utils.py")
+# if not os.path.exists(expected_util_file):
+#     print(f"DEBUG: article_parser_utils.py not found at {expected_util_file}", file=sys.stderr)
+#     print(f"DEBUG: Current sys.path: {sys.path}", file=sys.stderr)
+#     # Attempt an alternative path based on a fixed workspace root if the above fails contextually
+#     # This is a fallback if __file__ context is tricky
+#     fixed_utils_path = "/mnt/data/AI4Deliberation/new_html_extraction/article_extraction_analysis"
+#     if fixed_utils_path not in sys.path:
+#         sys.path.insert(0, fixed_utils_path)
+#         print(f"DEBUG: Added fixed path {fixed_utils_path} to sys.path", file=sys.stderr)
 
 # Assuming article_parser_utils is in the same directory or accessible in PYTHONPATH
-from article_parser_utils import extract_all_main_articles_with_content
+from article_parser_utils import extract_all_main_articles_with_content, extract_article_sequences
 
 # --- Configuration ---
 # Use the database that we confirmed has data
-DB_PATH = "/mnt/data/AI4Deliberation/new_html_extraction/deliberation_data_gr_markdownify.db"
+DB_PATH = os.path.abspath(os.path.join(utils_dir_path, "..", "deliberation_data_gr_markdownify.db"))
 TABLE_NAME = "articles"
 CONTENT_COLUMN_NAME = "content"
 ID_COLUMN_NAME = "id"
@@ -26,7 +58,6 @@ MAX_CRAMMED_TO_INCLUDE = 10 # Max articles to pick from the CSV
 # Configure logging
 LOG_FORMAT = '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-
 
 def fetch_article_content_by_id(conn, article_db_id):
     """Fetches the content of a specific article by its DB ID."""
@@ -250,5 +281,125 @@ Content for article 10.
     logging.info(f"Failed: {failed_count}")
     logging.info("Finished article reconstruction test.")
 
-if __name__ == "__main__":
-    main() 
+class TestArticleReconstruction(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        """Set up resources for all tests in this class."""
+        cls.conn = None
+        if not os.path.exists(DB_PATH):
+            logging.warning(f"DB not found at {DB_PATH}. DB-dependent tests will be skipped or will fail if not handled.")
+            return
+        try:
+            cls.conn = sqlite3.connect(DB_PATH)
+        except sqlite3.Error as e:
+            logging.error(f"Failed to connect to DB at {DB_PATH}: {e}")
+
+    @classmethod
+    def tearDownClass(cls):
+        """Clean up resources after all tests in this class."""
+        if cls.conn:
+            cls.conn.close()
+            logging.info("DB connection closed by tearDownClass.")
+
+    def _fetch_article_content_by_id(self, article_db_id):
+        """Fetches the content of a specific article by its DB ID."""
+        if not self.conn:
+            self.skipTest("DB connection not available, skipping DB-dependent part of test.")
+            return None
+            
+        cursor = self.conn.cursor()
+        try:
+            query = f"SELECT {CONTENT_COLUMN_NAME} FROM {TABLE_NAME} WHERE {ID_COLUMN_NAME} = ?"
+            cursor.execute(query, (article_db_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except sqlite3.Error as e:
+            logging.error(f"DB error fetching content for ID {article_db_id}: {e}")
+            return None
+
+    def _reconstruct_content_from_chunks(self, chunks):
+        """Helper to reconstruct content from a list of parsed chunks."""
+        reconstructed_lines = []
+        for chunk in chunks:
+            reconstructed_lines.append(chunk['content_text'])
+        return "\n".join(reconstructed_lines)
+
+    def test_reconstruction_from_extract_all_main_articles_static(self):
+        """Tests reconstruction with static string examples."""
+        test_cases = [
+            {"name": "No articles", "content": "Just some random text.\nAnother line."},
+            {"name": "Single main article", "content": "Άρθρο 1\nThis is content for article 1.\nMore content."},
+            {"name": "Two main articles", "content": "Άρθρο 1\nContent 1\nΆρθρο 2\nContent 2"},
+            {"name": "Preamble and one article", "content": "This is a preamble.\nIt has multiple lines.\nΆρθρο 1\nContent for article 1."},
+            {"name": "Empty content", "content": ""},
+            {"name": "Content with only newlines", "content": "\n\n\n"},
+        ]
+        for case in test_cases:
+            with self.subTest(name=case["name"]):
+                original_content = case["content"]
+                expected_reconstructed_content = "\n".join(original_content.splitlines())
+                chunks = extract_all_main_articles_with_content(original_content)
+                reconstructed_content = self._reconstruct_content_from_chunks(chunks)
+                self.assertEqual(reconstructed_content, expected_reconstructed_content)
+
+    def test_reconstruction_from_db_articles_range_1_to_200(self):
+        """Tests reconstruction for article DB IDs 1 to 200."""
+        if not self.conn:
+            self.skipTest(f"Database not available or connection failed (path: {DB_PATH}). Skipping DB reconstruction test.")
+
+        test_article_ids = range(1, 201) # IDs 1 to 200 inclusive
+        logging.info(f"Testing DB article reconstruction for IDs 1 to 200.")
+
+        found_count = 0
+        for article_id in test_article_ids:
+            with self.subTest(article_db_id=article_id):
+                original_content = self._fetch_article_content_by_id(article_id)
+                if original_content is None:
+                    logging.info(f"Article DB ID {article_id} not found in DB. Skipping.")
+                    continue # Skip if article doesn't exist
+                
+                found_count += 1
+                expected_reconstructed_content = "\n".join(original_content.splitlines())
+                chunks = extract_all_main_articles_with_content(original_content)
+                reconstructed_content = self._reconstruct_content_from_chunks(chunks)
+                self.assertEqual(reconstructed_content, expected_reconstructed_content,
+                                 msg=f"Reconstruction failed for DB ID {article_id}")
+        logging.info(f"Tested {found_count} articles found within DB ID range 1-200.")
+        self.assertTrue(found_count > 0, "No articles in range 1-200 were found in the database to test.")
+
+    def test_reconstruction_from_v4_report_json(self):
+        """Tests reconstruction from the article_structure_json in the v4 report."""
+        v4_report_path = os.path.join(utils_dir_path, "crammed_articles_integrity_report_enhanced_v4.csv")
+        self.assertTrue(os.path.exists(v4_report_path), f"v4 report not found at {v4_report_path}")
+
+        try:
+            df = pd.read_csv(v4_report_path)
+        except Exception as e:
+            self.fail(f"Failed to read CSV {v4_report_path}: {e}")
+
+        test_row_df = df[(df['consultation_id'] == 1) & (df['article_db_id'] == 2)]
+        if test_row_df.empty:
+            test_row_df = df[df['article_structure_json'].notna() & (df['article_structure_json'] != '')].head(1)
+        
+        self.assertFalse(test_row_df.empty, "No suitable test row with article_structure_json found in v4 report.")
+        test_row = test_row_df.iloc[0]
+        article_db_id_for_test = test_row['article_db_id']
+        original_content_from_db_col = test_row['db_entry_content']
+        json_string = test_row['article_structure_json']
+
+        self.assertIsInstance(json_string, str, "article_structure_json is not a string.")
+        self.assertTrue(len(json_string) > 0, "article_structure_json is empty.")
+
+        try:
+            parsed_json_chunks = json.loads(json_string)
+        except json.JSONDecodeError as e:
+            self.fail(f"Failed to parse JSON for article_db_id {article_db_id_for_test}: {e}")
+
+        reconstructed_from_json_lines = [chunk['content_text'] for chunk in parsed_json_chunks]
+        reconstructed_content_from_json = "\n".join(reconstructed_from_json_lines)
+        expected_original_content = "\n".join(original_content_from_db_col.splitlines())
+        self.assertEqual(reconstructed_content_from_json, expected_original_content)
+
+if __name__ == '__main__':
+    unittest.main() 
