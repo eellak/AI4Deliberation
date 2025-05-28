@@ -92,23 +92,51 @@ ARTICLE_HEADER_REGEX = re.compile(
     r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after "Άρθρο" keyword)
     r"\s*"                                             # OPTIONAL space(s) after "Άρθρο" and before the number
     r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (before number)
-    r"(?:" + number_pattern_group + r")"               # Number group (digit based, handles 1****18)
+    r"(?:(" + number_pattern_group + r"))"               # Number group (digit based, handles 1****18)
     r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after number)
     r"(?:\s*(?P<alpha_suffix>(?!παρ\.)[Α-Ωα-ω]{1,2}))?" # Optional: optional_space + alpha suffix (1-2 Greek letters, not 'πα' if part of 'παρ.')
     r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after alpha_suffix)
     r"(?:\s*[\-–]\s*(?P<number_end_digit>\d+))?"        # Optional: range end (e.g., " - 17" or " – 20")
-    r"(?:"                                             # Start non-capturing group for potential paragraph
+    r"(?:("                                             # Start non-capturing group for potential paragraph
         r"\s*[.:]?\s*"                                 # Separator: optional spaces, optional dot/colon, optional spaces
         r"(?P<paragraph_full>"                         # Start of paragraph capture group
             r"παρ\."                                   # Literal "παρ."
             r"\s*"                                    # Optional spaces
             r"(?P<paragraph_id>\d+)"                   # Digit paragraph ID
         r")"                                           # End of paragraph capture group
-    r")?"                                              # End of optional paragraph non-capturing group
+    r"))?"                                              # End of optional paragraph non-capturing group
     r"(?:\s*[.:]?)?"                                   # Optional: spaces, dot or colon (e.g. "Άρθρο 1." or "Άρθρο 1 παρ. 2:")
     r"(?P<trailing_text>.*?)?"                         # Optional: non-greedy capture of any trailing text
     r"\s*$"                                            # Optional trailing whitespace and End of line
 )
+
+# New Regex for finding mentions anywhere in text (not anchored to line start/end)
+# It largely mirrors ARTICLE_HEADER_REGEX but without ^ and $ anchors and without initial #/*- prefix logic
+# and trailing_text is made more general as it's not necessarily 'trailing on the line'.
+ARTICLE_MENTION_REGEX = re.compile(
+    # r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (around "Άρθρο" keyword)
+    r"(?:[ΆΑ]ρθρ(?:[*_~`]*)[οαo]|[ΆΑάα]ρθρα)\.?"        # Match "Άρθρο/Αρθρο" (allowing emphasis like Άρθρ**o and Latin o) or "Άρθρα/άρθρα" etc., with an optional dot.
+    r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after "Άρθρο" keyword)
+    r"\s*"                                             # OPTIONAL space(s) after "Άρθρο" and before the number
+    r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (before number)
+    r"(?:(" + number_pattern_group + r"))"               # Number group (digit based, handles 1****18)
+    r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after number)
+    r"(?:\s*(?P<alpha_suffix>(?!παρ\.)[Α-Ωα-ω]{1,2}))?" # Optional: optional_space + alpha suffix (1-2 Greek letters, not 'πα' if part of 'παρ.')
+    r"(?:[*_~`]*)"                                     # Optional Markdown emphasis characters (after alpha_suffix)
+    r"(?:\s*[\-–]\s*(?P<number_end_digit>\d+))?"        # Optional: range end (e.g., " - 17" or " – 20")
+    r"(?:("                                             # Start non-capturing group for potential paragraph
+        r"\s*[.:]?\s*"                                 # Separator: optional spaces, optional dot/colon, optional spaces
+        r"(?P<paragraph_full>"                         # Start of paragraph capture group
+            r"παρ\."                                   # Literal "παρ."
+            r"\s*"                                    # Optional spaces
+            r"(?P<paragraph_id>\d+)"                   # Digit paragraph ID
+        r")"                                           # End of paragraph capture group
+    r"))?"                                              # End of optional paragraph non-capturing group
+    r"(?:\s*[.:]?)?"                                   # Optional: spaces, dot or colon
+    # No trailing_text capture here as it's not meaningful for general mentions in the same way as headers.
+    # No r"\s*$" anchor
+)
+
 
 # +++ NEW HELPER FUNCTION +++
 def _is_header_effectively_quoted(original_line_text: str,
@@ -136,27 +164,24 @@ def _is_header_effectively_quoted(original_line_text: str,
     return is_quoted
 # +++ END NEW HELPER FUNCTION +++ 
 
-
-def parse_article_header(line_text):
+# --- INTERNAL HELPER for parsing regex match details ---
+def _parse_article_match_details(match, line_text_for_warning=""):
     """
-    Parses a line of text to identify and extract article header information
-    based on restricted, case-sensitive patterns.
-
+    Internal helper to extract structured data from an article regex match object.
     Args:
-        line_text (str): The line of text to parse.
-
+        match: A regex match object (from ARTICLE_HEADER_REGEX or ARTICLE_MENTION_REGEX).
+        line_text_for_warning (str): The original line text, for inclusion in warnings.
     Returns:
-        dict or None: Structured info or None if not a header.
+        dict or None: Structured info or None if essential parts are missing/invalid.
     """
-    match = ARTICLE_HEADER_REGEX.match(line_text) # Reverted from .search() back to .match()
     if not match:
         return None
 
-    data = {'type': 'article', 'match_obj': match} # Store the match object temporarily
+    data = {'type': 'article'} # Base type
     
     number_digit_prefix = match.group('number_digit_prefix') 
     number_digit_suffix = match.group('number_digit_suffix') 
-    alpha_suffix_val = match.group('alpha_suffix') # Capture alpha suffix
+    alpha_suffix_val = match.group('alpha_suffix')
 
     if number_digit_prefix: 
         if number_digit_suffix:
@@ -165,63 +190,156 @@ def parse_article_header(line_text):
                 data['main_number'] = int(combined_digits_str)
                 data['raw_number'] = f"{number_digit_prefix}****{number_digit_suffix}"
             except ValueError:
-                logging.warning(f"Could not convert combined digits '{combined_digits_str}' from '{line_text}' to int.")
-                return None
+                logging.warning(f"Could not convert combined digits '{combined_digits_str}' from '{line_text_for_warning}' to int.")
+                return None # Essential number is invalid
         else:
             try:
                 data['main_number'] = int(number_digit_prefix)
                 data['raw_number'] = number_digit_prefix
             except ValueError:
-                logging.warning(f"Could not convert digits '{number_digit_prefix}' from '{line_text}' to int.")
-                return None
+                logging.warning(f"Could not convert digits '{number_digit_prefix}' from '{line_text_for_warning}' to int.")
+                return None # Essential number is invalid
     else:
-        logging.warning(f"No digit-based number found in matched header: '{line_text}'. This is unexpected.")
+        # This case should ideally not be reached if the regex requires a number_pattern_group match.
+        logging.warning(f"No digit-based number found in matched pattern from '{line_text_for_warning}'. This is unexpected.")
         return None
 
     data['alpha_suffix'] = alpha_suffix_val # Store the alpha suffix if present
-
-    # Capture end of range if present
     data['number_end_digit'] = match.group('number_end_digit') if match.group('number_end_digit') else None
     if data['number_end_digit']:
         try:
             data['main_number_end'] = int(data['number_end_digit'])
         except ValueError:
-            logging.warning(f"Matched end-of-range number '{data['number_end_digit']}' but could not convert to int.")
-            data['main_number_end'] = None # Or handle as an error
+            logging.warning(f"Matched end-of-range number '{data['number_end_digit']}' from '{line_text_for_warning}' but could not convert to int.")
+            data['main_number_end'] = None 
     else:
         data['main_number_end'] = None
 
     data['paragraph_full'] = match.group('paragraph_full') if match.group('paragraph_full') else None
     data['paragraph_id'] = match.group('paragraph_id') if match.group('paragraph_id') else None
-    # sub_paragraph_id is removed as per simplification
-    data['sub_paragraph_id'] = None
+    data['sub_paragraph_id'] = None # Consistently None, as per prior structure
+
+    # For ARTICLE_HEADER_REGEX, it has 'trailing_text'. For ARTICLE_MENTION_REGEX, it doesn't.
+    if 'trailing_text' in match.groupdict():
+        data['trailing_text'] = match.group('trailing_text')
+    else:
+        data['trailing_text'] = None
     
     return data
+# --- END INTERNAL HELPER ---
 
-def check_article_number_sequence_continuity(numbers_list, max_consecutive_zero_steps=5):
+def parse_article_header(line_text):
     """
-    Checks if a list of article numbers forms a continuous sequence.
-    Continuity is defined as:
-    - Each number is either N+1 of the previous.
-    - Or, each number is N (same as previous), for a maximum of 'max_consecutive_zero_steps' times.
+    Parses a line of text to identify and extract article header information
+    based on restricted, case-sensitive patterns (must be at line start).
+
+    Args:
+        line_text (str): The line of text to parse. (Should be stripped by caller ideally)
+
+    Returns:
+        dict or None: Structured info or None if not a header.
     """
-    if not numbers_list or len(numbers_list) <= 1:
-        return True  # An empty list or a single number is considered continuous.
+    match = ARTICLE_HEADER_REGEX.match(line_text)
+    if not match:
+        return None
+    
+    # Call the new internal helper to do the bulk of the parsing
+    parsed_details = _parse_article_match_details(match, line_text)
+    
+    if parsed_details:
+        # Store the raw match object if needed by specific callers of parse_article_header
+        # (e.g., extract_all_main_articles_with_content might use it for offsets)
+        # However, to keep the return clean and consistent, we might avoid adding it
+        # if _parse_article_match_details already extracts everything.
+        # For now, let's assume _parse_article_match_details is sufficient and
+        # if a match_obj is needed later by a specific consumer of parse_article_header,
+        # it can be added back carefully.
+        # The original 'parsed_header.pop('match_obj')' suggests it was used.
+        # Let's keep it in for parse_article_header for now to minimize behavioral change for its direct consumers.
+        parsed_details['match_obj'] = match 
+    
+    return parsed_details
 
-    consecutive_zero_steps_count = 0
-    for i in range(len(numbers_list) - 1):
-        current_num = numbers_list[i]
-        next_num = numbers_list[i+1]
 
-        if next_num == current_num + 1:
-            consecutive_zero_steps_count = 0  # Reset counter
-        elif next_num == current_num:
-            consecutive_zero_steps_count += 1
-            if consecutive_zero_steps_count > max_consecutive_zero_steps:
-                return False  # Too many zero-steps
-        else:
-            return False  # Gap or out of order
-    return True
+# --- NEW PUBLIC FUNCTION ---
+def find_all_article_mentions(content_text: str):
+    """
+    Finds all occurrences of "Άρθρο X [παρ. Υ]" patterns anywhere within the content_text.
+    For each mention, it provides details including its position, parsed data,
+    and flags for whether it's at the start of its line and whether it's quoted.
+
+    Args:
+        content_text (str): The full text content to search.
+
+    Returns:
+        list: A list of dictionaries, where each dictionary represents an article mention.
+              Each dictionary contains:
+                'line_index' (int): 0-indexed original line number.
+                'original_line_text' (str): The full text of the line where the mention was found.
+                'match_text' (str): The actual text that matched the regex.
+                'match_start_char_in_line' (int): Start character offset of the match within original_line_text.
+                'match_end_char_in_line' (int): End character offset of the match within original_line_text.
+                'parsed_details' (dict): Structured data from _parse_article_match_details.
+                'is_start_of_line' (bool): True if the mention is at the logical start of the line.
+                'is_quoted' (bool): True if the mention is within Guillemet quotes («...»).
+    """
+    if not content_text or not isinstance(content_text, str):
+        return []
+
+    all_mentions = []
+    lines = content_text.splitlines()
+    
+    open_quotes_total_accumulator = 0
+    close_quotes_total_accumulator = 0
+
+    for i, line_text in enumerate(lines):
+        # Iterate over all matches in the current line
+        for match in ARTICLE_MENTION_REGEX.finditer(line_text):
+            parsed_details = _parse_article_match_details(match, line_text)
+            if not parsed_details:
+                # logging.debug(f"Skipping invalid mention parse on line {i}: '{match.group(0)}'")
+                continue # Skip if core parsing failed (e.g., invalid number)
+
+            match_start_char = match.start()
+            match_end_char = match.end()
+            
+            # Determine if the match is at the logical start of the line
+            # A match is at the start if all characters before it on the line are whitespace.
+            is_start = True
+            if match_start_char > 0: # Only check if not already at the very beginning
+                # Check if all preceding characters on the line are whitespace
+                if not line_text[:match_start_char].isspace():
+                    is_start = False
+            
+            # Determine if the match is quoted
+            # _is_header_effectively_quoted needs the start index of the match in the original line text
+            # and the accumulated quote counts from *previous* lines.
+            # The current line's quotes before the match are handled by _is_header_effectively_quoted.
+            is_quoted_flag = _is_header_effectively_quoted(
+                original_line_text=line_text,
+                header_match_start_idx_in_original=match_start_char,
+                open_quotes_count_from_prev_lines=open_quotes_total_accumulator,
+                close_quotes_count_from_prev_lines=close_quotes_total_accumulator
+            )
+            
+            all_mentions.append({
+                'line_index': i,
+                'original_line_text': line_text,
+                'match_text': match.group(0),
+                'match_start_char_in_line': match_start_char,
+                'match_end_char_in_line': match_end_char,
+                'parsed_details': parsed_details,
+                'is_start_of_line': is_start,
+                'is_quoted': is_quoted_flag
+            })
+            
+        # After processing all mentions on the line, update total quote counts from this line
+        # for the next line's context.
+        open_quotes_total_accumulator += line_text.count('«')
+        close_quotes_total_accumulator += line_text.count('»')
+        
+    return all_mentions
+# --- END NEW PUBLIC FUNCTION ---
 
 
 def extract_article_sequences(content_text, max_consecutive_zero_steps_for_grouping=5):
@@ -662,21 +780,13 @@ def calculate_average_word_count_of_true_articles(db_entry_content: str) -> floa
         else: # Should not be reached, but as a fallback
             return 0.0
 
-# --- NEW INTERNAL HELPER FUNCTION ---
 def _get_true_main_article_header_locations(content_text: str):
     """
     Core internal function to find all valid, non-quoted main article headers.
     Returns a list of dictionaries, each detailing a detected article start point.
-    Handles range expansion (e.g., "Άρθρο 1-3" produces entries for 1, 2, and 3).
+    Handles range expansion and includes the 'match_text'.
+    MODIFIED to include 'match_text'.
     """
-    # Ensure logging is configured if this util is run standalone or imported early
-    # This is a bit of a heavy-handed way for a util, but for deep debugging:
-    # logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - In Func %(funcName)s - %(message)s')
-    # Preferring that the calling script (orchestrator) sets up logging.
-    # We can use a logger specific to this module if needed:
-    # util_logger = logging.getLogger("article_parser_utils_detail")
-    # For now, rely on root logger or whatever the orchestrator sets for DEBUG level.
-
     if not content_text or not isinstance(content_text, str):
         logging.debug("_get_true_main_article_header_locations: Received empty or invalid content_text.")
         return []
@@ -697,11 +807,28 @@ def _get_true_main_article_header_locations(content_text: str):
         is_effectively_quoted = False
         if parsed_data and parsed_data.get('main_number') is not None and parsed_data.get('paragraph_id') is None:
             logging.debug(f"_get_true_main_article_header_locations: Line {i} is a candidate main article header: '{stripped_line_for_parse}'")
-            parsed_data_copy_for_storage = parsed_data.copy()
-            match_obj = parsed_data.pop('match_obj') 
             
+            # Get the match_obj from parsed_data
+            match_obj_for_this_header = parsed_data.get('match_obj') 
+            if not match_obj_for_this_header:
+                 logging.error(f"Match object missing in parsed_data for line {i} ('{stripped_line_for_parse}'). Skipping header.")
+                 # Update quote accumulators before continuing to next line
+                 opens_on_current_line = line_text.count('«')
+                 closes_on_current_line = line_text.count('»')
+                 open_quotes_total_accumulator += opens_on_current_line
+                 close_quotes_total_accumulator += closes_on_current_line
+                 continue
+
+            actual_match_text = match_obj_for_this_header.group(0) # CAPTURE THE MATCHED TEXT
+
+            # Create a copy for storage, removing the match_obj from the copy
+            parsed_data_copy_for_storage = parsed_data.copy()
+            parsed_data_copy_for_storage.pop('match_obj', None)
+
             strip_offset = len(line_text) - len(line_text.lstrip())
-            actual_match_start_in_original = strip_offset + match_obj.start()
+            # match_obj_for_this_header.start() is on stripped_line_for_parse
+            actual_match_start_in_original = strip_offset + match_obj_for_this_header.start()
+            
             logging.debug(f"_get_true_main_article_header_locations: Line {i} - Accumulated quotes before this line: Opens={open_quotes_total_accumulator}, Closes={close_quotes_total_accumulator}")
 
             if _is_header_effectively_quoted(line_text, actual_match_start_in_original,
@@ -726,31 +853,35 @@ def _get_true_main_article_header_locations(content_text: str):
                     logging.debug(f"_get_true_main_article_header_locations: Line {i} - Handling as range from {start_num} to {end_num}.")
                     for num_in_range in range(start_num, end_num + 1):
                         true_headers.append({
-                            'line_index': i,
+                            'line_index': i, 
                             'original_line_text': line_text, 
                             'parsed_header_details_copy': parsed_data_copy_for_storage, 
                             'article_number': num_in_range, 
-                            'is_range_expansion': True
+                            'is_range_expansion': True,
+                            'match_text': actual_match_text # <<< ADDED/ENSURED THIS KEY
                         })
                         logging.debug(f"_get_true_main_article_header_locations: Line {i} - Added expanded article number {num_in_range} from range.")
                 else: # Single article or invalid range
                     true_headers.append({
-                        'line_index': i,
+                        'line_index': i, 
                         'original_line_text': line_text, 
                         'parsed_header_details_copy': parsed_data_copy_for_storage,
                         'article_number': start_num,
-                        'is_range_expansion': False
+                        'is_range_expansion': False,
+                        'match_text': actual_match_text # <<< ADDED/ENSURED THIS KEY
                     })
                     logging.debug(f"_get_true_main_article_header_locations: Line {i} - Added single article number {start_num}.")
             else:
                 logging.debug(f"_get_true_main_article_header_locations: Line {i} - SKIPPING quoted header: '{stripped_line_for_parse}'")
-        else:
+        # This 'else' block handles cases where parsed_data is None or not a main article candidate
+        # It was missing in the previous iteration, which could lead to quote accumulators not updating
+        # if a line had no main article candidate but did have quotes.
+        else: 
             if parsed_data: 
-                logging.debug(f"_get_true_main_article_header_locations: Line {i} - Parsed as a header '{stripped_line_for_parse}', but not a main article (e.g., has paragraph_id or no main_number). Details: {parsed_data}")
+                logging.debug(f"_get_true_main_article_header_locations: Line {i} - Parsed as a header '{stripped_line_for_parse}', but not a main article. Details: {parsed_data}")
             else:
                 logging.debug(f"_get_true_main_article_header_locations: Line {i} - Not parsed as any article header: '{stripped_line_for_parse}'")
         
-        # Update quote counts based on the *entire current line_text*
         opens_on_current_line = line_text.count('«')
         closes_on_current_line = line_text.count('»')
         open_quotes_total_accumulator += opens_on_current_line
@@ -1153,4 +1284,193 @@ if __name__ == '__main__':
         for msg in failure_messages:
             print(f"  - {msg}")
     print("--- END article_parser_utils.py INTERNAL TESTS ---")
+
+
+# ... existing code ...
+# Ensure it's after other major functions like extract_all_main_articles_with_content
+# and _get_true_main_article_header_locations
+
+
+def reconstruct_article_chunks_with_prioritized_mentions(original_text: str, 
+                                                       main_header_locations: list, 
+                                                       prioritized_mentions_input: list) -> list | None:
+    """
+    Re-segments the original_text based on a combined list of main headers and new prioritized mentions.
+
+    Args:
+        original_text (str): The full original markdown content.
+        main_header_locations (list): List of dicts from _get_true_main_article_header_locations.
+                                      Each dict: {'line_num': int (1-indexed), 
+                                                  'match_obj': re.Match, 
+                                                  'parsed_header': dict, 
+                                                  'raw_header_line': str}
+        prioritized_mentions_input (list): List of selected mentions to also act as delimiters.
+                                           Each dict from find_all_article_mentions, with keys like:
+                                           {'line_number' (1-indexed), 'char_offset_in_line' (0-indexed),
+                                            'match_text', 'parsed_info': {'main_number': int}, ...}
+
+    Returns:
+        list or None: A new list of article chunks, similar to extract_all_main_articles_with_content output.
+                      Returns None if critical errors occur or no valid delimiters are found.
+    """
+    if not original_text:
+        return [{'type': 'preamble', 'content': '', 'start_line': 1, 'end_line': 1}]
+
+    lines = original_text.splitlines(True) # Keep line endings for reconstruction
+    if not lines: # Should not happen if original_text is not empty
+        return [{'type': 'preamble', 'content': original_text, 'start_line': 1, 'end_line': 1}]
+
+
+    all_delimiters = []
+    processed_positions = set() # To avoid duplicate delimiters at the exact same spot
+
+    # Process main headers
+    for header_loc in main_header_locations:
+        line_num_1_indexed = header_loc['line_num']
+        # Main headers are assumed to start at char_offset 0 of their line for delimiter purposes
+        char_offset_0_indexed = 0 
+        position_key = (line_num_1_indexed, char_offset_0_indexed)
+
+        if position_key not in processed_positions:
+            article_num_val = header_loc.get('parsed_header', {}).get('main_number')
+            if article_num_val is None:
+                logging.warning(f"Main header at line {line_num_1_indexed} missing main_number. Skipping.")
+                continue
+            
+            all_delimiters.append({
+                'line_num': line_num_1_indexed, # 1-indexed
+                'char_offset_in_line': char_offset_0_indexed, # 0-indexed
+                'article_number': article_num_val,
+                'raw_header_text': header_loc['raw_header_line'].strip(), # Store stripped header
+                'is_main_header': True,
+                # The "content" starts AFTER this header text on its line
+                'delimiter_end_char_offset_in_line': len(header_loc['raw_header_line']) 
+            })
+            processed_positions.add(position_key)
+
+    # Process prioritized mentions
+    for mention in prioritized_mentions_input:
+        line_num_1_indexed = mention['line_number']
+        char_offset_0_indexed = mention['char_offset_in_line']
+        position_key = (line_num_1_indexed, char_offset_0_indexed)
+
+        if position_key not in processed_positions:
+            article_num_val = mention.get('parsed_info', {}).get('main_number')
+            if article_num_val is None:
+                logging.warning(f"Prioritized mention at line {line_num_1_indexed} missing main_number. Skipping.")
+                continue
+
+            all_delimiters.append({
+                'line_num': line_num_1_indexed, # 1-indexed
+                'char_offset_in_line': char_offset_0_indexed, # 0-indexed
+                'article_number': article_num_val,
+                'raw_header_text': mention['match_text'],
+                'is_main_header': False,
+                'delimiter_end_char_offset_in_line': char_offset_0_indexed + len(mention['match_text'])
+            })
+            processed_positions.add(position_key)
+        else:
+            logging.debug(f"Skipping prioritized mention at line {line_num_1_indexed}, char {char_offset_0_indexed} as it overlaps with an existing delimiter (likely a main header).")
+
+
+    if not all_delimiters:
+        # No headers found, treat all text as preamble
+        return [{'type': 'preamble', 'content': original_text, 'start_line': 1, 'end_line': len(lines)}]
+
+    # Sort delimiters by line number, then character offset
+    all_delimiters.sort(key=lambda d: (d['line_num'], d['char_offset_in_line']))
+
+    output_chunks = []
+    
+    # --- Preamble ---
+    first_header_info = all_delimiters[0]
+    preamble_end_line_0_indexed = first_header_info['line_num'] - 1 # Convert 1-indexed to 0-indexed for list
+    
+    preamble_content_lines = []
+    if preamble_end_line_0_indexed > 0: # If preamble ends on a line before the first header's line
+        preamble_content_lines.extend(lines[0:preamble_end_line_0_indexed])
+    
+    # Add content from the first header's line, *before* the header text itself
+    # Ensure line index is valid
+    if 0 <= preamble_end_line_0_indexed < len(lines):
+        line_of_first_header = lines[preamble_end_line_0_indexed]
+        preamble_content_lines.append(line_of_first_header[:first_header_info['char_offset_in_line']])
+    elif preamble_end_line_0_indexed == 0 and first_header_info['char_offset_in_line'] > 0: # Header on first line, but not at start
+         line_of_first_header = lines[0]
+         preamble_content_lines.append(line_of_first_header[:first_header_info['char_offset_in_line']])
+
+
+    preamble_content = "".join(preamble_content_lines).rstrip() # rstrip to remove trailing whitespace/newlines
+    if preamble_content or not output_chunks: # Add preamble if it has content or if it's the only thing (no articles)
+        output_chunks.append({
+            'type': 'preamble',
+            'content': preamble_content,
+            'start_line': 1,
+            'end_line': first_header_info['line_num'] # The line the first header is on
+        })
+
+    # --- Articles ---
+    for i, header_info in enumerate(all_delimiters):
+        current_article_start_line_1_indexed = header_info['line_num']
+        
+        # Content for the current article starts on the header's line, after the header text
+        article_content_lines = []
+        
+        # First line of the current article's content
+        # Ensure line index is valid
+        current_header_line_0_indexed = current_article_start_line_1_indexed - 1
+        if 0 <= current_header_line_0_indexed < len(lines):
+            first_content_line_text = lines[current_header_line_0_indexed][header_info['delimiter_end_char_offset_in_line']:]
+            article_content_lines.append(first_content_line_text)
+        
+        # Determine end of current article's content
+        if i + 1 < len(all_delimiters): # If there is a next header
+            next_header_info = all_delimiters[i+1]
+            # Content goes up to the line *before* the next header's line
+            content_end_line_exclusive_1_indexed = next_header_info['line_num']
+            
+            # Add full lines between current header's line and next header's line
+            # Start from line after current_header_line_0_indexed, up to line before next_header_info['line_num']-1
+            # current_article_start_line_1_indexed is the line num of current header
+            # next_header_info['line_num']-1 is the line num (0-indexed) of the line before next header
+            start_slice = current_article_start_line_1_indexed # (current_header_line_0_indexed + 1)
+            end_slice = next_header_info['line_num'] - 1 # (next_header_info['line_num'] -1) as 0-indexed slice end
+            
+            if start_slice < end_slice : # if there are full lines in between
+                 article_content_lines.extend(lines[start_slice : end_slice])
+
+            # Add content from the next header's line, *before* the header text itself
+            # Ensure line index is valid for next_header_line_0_indexed
+            next_header_line_0_indexed = next_header_info['line_num'] - 1
+            if 0 <= next_header_line_0_indexed < len(lines):
+                last_content_line_text = lines[next_header_line_0_indexed][:next_header_info['char_offset_in_line']]
+                # Only add if current header and next are not on the same line, or if there's text
+                if current_article_start_line_1_indexed != next_header_info['line_num'] or next_header_info['char_offset_in_line'] > 0:
+                    article_content_lines.append(last_content_line_text)
+            
+            current_article_end_line_1_indexed = next_header_info['line_num']
+        
+        else: # This is the last article
+            # Content goes from after the current header's line to the end of the document
+            # Start from line after current_header_line_0_indexed
+            if current_article_start_line_1_indexed < len(lines): # If there are lines after the header's line
+                article_content_lines.extend(lines[current_article_start_line_1_indexed:])
+            current_article_end_line_1_indexed = len(lines)
+
+        article_content = "".join(article_content_lines).rstrip()
+        
+        output_chunks.append({
+            'type': 'article',
+            'article_number': header_info['article_number'],
+            'raw_header': header_info['raw_header_text'], # The text of the delimiter
+            'content': article_content,
+            'start_line': current_article_start_line_1_indexed,
+            'end_line': current_article_end_line_1_indexed
+        })
+        
+    return output_chunks
+
+# ... existing code ...
+# Ensure it's placed before the if __name__ == '__main__': block if that exists,
+# or generally with other utility functions.
 
