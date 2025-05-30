@@ -1,0 +1,11 @@
+2025-05-30 11:18:49,705 - INFO - Starting document redirect processing
+2025-05-30 11:18:49,705 - ERROR - Input parquet file not found: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:18:49,705 - INFO - Please run export_documents_to_parquet.py first
+2025-05-30 11:20:33,711 - INFO - Starting document redirect processing
+2025-05-30 11:20:33,725 - INFO - Loaded 4 documents from /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:33,727 - INFO - Processing batch 1: URLs 0-3
+2025-05-30 11:20:37,761 - INFO - Completed batch 1 (4/4)
+2025-05-30 11:20:37,767 - INFO - URL processing complete: 4 successful, 0 errors
+2025-05-30 11:20:37,771 - INFO - Updated 4 documents with redirected URLs in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:37,771 - INFO - URL redirect processing complete
+2025-05-30 11:20:37,771 - INFO - Next step: Run the PDF processing script on /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet

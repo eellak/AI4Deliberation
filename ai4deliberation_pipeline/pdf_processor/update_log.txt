@@ -1,0 +1,86 @@
+2025-05-30 11:18:56,173 - INFO - Starting database update process
+2025-05-30 11:18:56,173 - ERROR - Download results file not found: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results.parquet
+2025-05-30 11:18:56,173 - INFO - Please run process_pdfs_with_glossapi.py first
+2025-05-30 11:18:56,173 - ERROR - Database update failed
+2025-05-30 11:23:13,274 - INFO - Loading configuration from: /mnt/data/AI4Deliberation/config/pipeline_config.yaml
+2025-05-30 11:23:13,280 - INFO - Configuration loaded successfully from file
+2025-05-30 11:23:13,280 - INFO - Configuration validation passed
+2025-05-30 11:23:13,280 - INFO - Starting database update process
+2025-05-30 11:23:13,281 - ERROR - Download results file not found: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results.parquet
+2025-05-30 11:23:13,281 - INFO - Please run process_pdfs_with_glossapi.py first
+2025-05-30 11:23:13,281 - ERROR - Database update failed
+2025-05-30 11:27:20,028 - INFO - Loading configuration from: /mnt/data/AI4Deliberation/config/pipeline_config.yaml
+2025-05-30 11:27:20,034 - INFO - Configuration loaded successfully from file
+2025-05-30 11:27:20,034 - INFO - Configuration validation passed
+2025-05-30 11:27:20,034 - INFO - Starting database update process
+2025-05-30 11:27:20,041 - INFO - Connected to database using SQLAlchemy
+2025-05-30 11:27:20,059 - INFO - Read 4 download results and 4 document mappings
+2025-05-30 11:27:20,059 - INFO - Results DataFrame columns: ['document_id', 'redirected_url', 'download_success', 'filename', 'download_error', 'download_retry_count', 'extraction', 'processing_stage']
+2025-05-30 11:27:20,059 - INFO - Mapping DataFrame columns: ['document_id', 'redirected_url']
+2025-05-30 11:27:20,060 - INFO - Results DataFrame sample (first row): {'document_id': 2090, 'redirected_url': 'http://www.opengov.gr/ypoian/wp-content/uploads/downloads/2025/04/%CE%91%CE%A3%CE%A5%CE%A1-%CE%91%CE%9D%CE%91%CE%A0%CE%A4%CE%A5%CE%9E%CE%99%CE%91%CE%9A%CE%9F%CE%A3.pdf', 'download_success': True, 'filename': 'AAA_000.pdf', 'download_error': '', 'download_retry_count': 0, 'extraction': 'good', 'processing_stage': 'download,extract'}
+2025-05-30 11:27:20,060 - INFO - Mapping DataFrame sample (first row): {'document_id': 2090, 'redirected_url': 'http://www.opengov.gr/ypoian/wp-content/uploads/downloads/2025/04/%CE%91%CE%A3%CE%A5%CE%A1-%CE%91%CE%9D%CE%91%CE%A0%CE%A4%CE%A5%CE%9E%CE%99%CE%91%CE%9A%CE%9F%CE%A3.pdf'}
+2025-05-30 11:27:20,063 - INFO - Merged dataframes, got 4 records
+2025-05-30 11:27:20,063 - INFO - Merged DataFrame columns: ['document_id_x', 'redirected_url', 'download_success', 'filename', 'download_error', 'download_retry_count', 'extraction', 'processing_stage', 'document_id_y']
+2025-05-30 11:27:20,063 - INFO - After renaming, columns: ['document_id_x', 'redirected_url', 'download_success', 'filename', 'download_error', 'download_retry_count', 'extraction', 'processing_stage', 'document_id_y', 'document_id']
+2025-05-30 11:27:20,063 - INFO - Found 4 markdown files
+2025-05-30 11:27:20,091 - INFO - Update complete: Successfully updated 4 documents with content and extraction quality
+2025-05-30 11:27:20,091 - INFO - Documents with error messages only (no content): 0
+2025-05-30 11:27:20,092 - INFO - Errors encountered: 0
+2025-05-30 11:27:20,092 - INFO - Database update successful
+2025-05-30 11:27:20,292 - INFO - 
+Database statistics after update:
+2025-05-30 11:27:20,292 - INFO - Total documents: 2096
+2025-05-30 11:27:20,292 - INFO - Documents with content: 1371 (65.4%)
+2025-05-30 11:27:20,292 - INFO - Documents with extraction quality: 1445 (68.9%)
+2025-05-30 11:27:20,292 - INFO - Extraction quality breakdown:
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfc1c0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfc460 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfce80 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfd060 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfd720 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfdd20 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfde10 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfdff0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfe020 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,292 - INFO -   RetryError[<Future at 0x7f6480dfe860 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dfeb60 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dfec20 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dff130 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dff550 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dffa90 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480dffb50 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fec700 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fec760 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fed0c0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fed690 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fed810 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480feded0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fee170 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fee1d0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fee4d0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480feeb30 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fef670 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fef880 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fefb80 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480fefd60 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f6480feffa0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f64889aa200 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f64889aa740 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f64889aa920 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f64889ab0a0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,293 - INFO -   RetryError[<Future at 0x7f64889abee0 state=finished raised ClientResponseError>]: 1 (0.1%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: doc: 1 (0.1%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: jpg: 6 (0.4%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: ods: 1 (0.1%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: png: 4 (0.3%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: xls: 4 (0.3%)
+2025-05-30 11:27:20,294 - INFO -   Unsupported file format: zip: 5 (0.3%)
+2025-05-30 11:27:20,294 - INFO -   bad: 216 (14.9%)
+2025-05-30 11:27:20,294 - INFO -   good: 1172 (81.1%)
+2025-05-30 11:27:20,377 - INFO - 
+Sample documents with content:
+2025-05-30 11:27:20,378 - INFO -   Document ID: 535, Type: analysis, Quality: good, Content Length: 65471 chars
+2025-05-30 11:27:20,378 - INFO -   Document ID: 529, Type: analysis, Quality: good, Content Length: 74702 chars
+2025-05-30 11:27:20,378 - INFO -   Document ID: 236, Type: analysis, Quality: good, Content Length: 236641 chars
+2025-05-30 11:27:20,378 - INFO -   Document ID: 1144, Type: other_report, Quality: good, Content Length: 17915 chars
+2025-05-30 11:27:20,378 - INFO -   Document ID: 277, Type: analysis, Quality: good, Content Length: 188136 chars

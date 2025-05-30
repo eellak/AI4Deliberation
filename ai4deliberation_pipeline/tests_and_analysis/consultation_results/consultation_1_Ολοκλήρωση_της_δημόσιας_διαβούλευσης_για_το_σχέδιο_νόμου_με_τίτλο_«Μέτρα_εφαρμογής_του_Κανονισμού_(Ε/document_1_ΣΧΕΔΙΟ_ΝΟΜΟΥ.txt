@@ -1,0 +1,4 @@
+DOCUMENT ID: 1\nTITLE: ΣΧΕΔΙΟ ΝΟΜΟΥ\nURL: https://www.opengov.gr/digitalandbrief/wp-content/plugins/download-monitor/download.php?id=47\nTYPE: law_draft\nEXTRACTION METHOD: None\nBADNESS SCORE: None\nGREEK PERCENTAGE: None%\nENGLISH PERCENTAGE: None%\n\n--- METADATA ---\nNo metadata available (table missing).\n\n\n--- ORIGINAL CONTENT ---\nN/A
+
+--- CLEANED CONTENT (Pipeline) ---
+N/A

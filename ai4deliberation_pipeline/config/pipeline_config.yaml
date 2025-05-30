@@ -1,0 +1,140 @@
+# AI4Deliberation Pipeline Configuration
+
+# Database Configuration
+database:
+  # Default database path (can be overridden by command line)
+  default_path: "/mnt/data/AI4Deliberation/new_html_extraction/deliberation_data_gr_markdownify.db"
+  # Backup directory for database migrations
+  backup_dir: "/mnt/data/AI4Deliberation/backups"
+  backup_prefix: "deliberation_data_gr_markdownify_backup"
+
+# Processing Directories
+directories:
+  # Base directory for temporary processing files
+  temp_processing: "/mnt/data/AI4Deliberation/temp_processing"
+  # Downloaded PDFs
+  pdfs: "/mnt/data/AI4Deliberation/temp_processing/pdfs"
+  # Extracted markdown files
+  markdown: "/mnt/data/AI4Deliberation/temp_processing/markdown"
+  # Rust-cleaned files
+  cleaned: "/mnt/data/AI4Deliberation/temp_processing/cleaned"
+  # Log files
+  logs: "/mnt/data/AI4Deliberation/logs"
+  backups: "backups"
+
+# Scraper Configuration
+scraper:
+  # Request delays (min, max) in seconds
+  request_delay_range: [0.15, 0.25]
+  # Request timeout in seconds
+  request_timeout: 30
+  # Batch size for database operations
+  batch_size: 100
+  # Maximum retries for failed requests
+  max_retries: 3
+  # User agent string
+  user_agent: "AI4Deliberation-Bot/1.0"
+  # Base URL for OpenGov consultations
+  base_url: "https://www.opengov.gr/home/category/consultations"
+  delay_between_requests: 1.0
+
+# HTML Processing Configuration
+html_processing:
+  # Batch size for article processing
+  batch_size: 100
+  # Markdownify settings
+  markdownify:
+    heading_style: "ATX"
+    bullets: "*"
+    emphasis_mark: "_"
+    strong_mark: "**"
+    wrap: false           # Whether to wrap long lines
+    wrap_width: 80        # Wrap width if wrapping is enabled
+    strip_comments: true  # Remove HTML comments
+    convert_truefalse: ["b", "strong", "i", "em", "u", "mark"]  # Convert these tags
+
+# PDF Processing Configuration
+pdf_processing:
+  # GlossAPI configuration
+  glossapi:
+    # Number of parallel processes
+    max_workers: 4
+    # Timeout for PDF processing (seconds)
+    timeout: 300
+    # Maximum file size (MB)
+    max_file_size: 50
+  # Download configuration
+  download:
+    # Timeout for PDF downloads (seconds)
+    timeout: 60
+    # Maximum download size (MB)
+    max_size: 100
+    # Chunk size for streaming downloads (bytes)
+    chunk_size: 8192
+
+# Rust Cleaner Configuration
+rust_cleaner:
+  # Path to the Rust cleaner executable/directory
+  executable_path: "/mnt/data/AI4Deliberation/ΦΕΚ/nomoi/check_badness"
+  # Number of threads for Rust processing
+  threads: 4
+  # Script preferences (comma-separated)
+  scripts: "lat,grc"
+  # Batch size for file processing
+  batch_size: 100
+
+# Logging Configuration
+logging:
+  # Main log level (DEBUG, INFO, WARNING, ERROR)
+  level: "INFO"
+  # Log format
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  # Maximum log file size (MB)
+  max_file_size: 10
+  # Number of backup log files to keep
+  backup_count: 5
+  # Specific log files
+  files:
+    main: "/mnt/data/AI4Deliberation/logs/pipeline.log"
+    errors: "/mnt/data/AI4Deliberation/logs/errors.log"
+    failed_items: "/mnt/data/AI4Deliberation/logs/failed_items.log"
+
+# Pipeline Behavior Configuration
+pipeline:
+  # Whether to continue processing after failures
+  continue_on_error: true
+  # Maximum number of consecutive failures before stopping
+  max_consecutive_failures: 10
+  # Whether to cleanup temporary files after successful processing
+  cleanup_temp_files: true
+  # Whether to create detailed progress reports
+  detailed_progress: true
+  # Phases to run (comment out to skip)
+  enabled_phases:
+    - "scraper"
+    - "html_processing"
+    - "pdf_processing"
+    - "rust_cleaning"
+    # - "reference_detection"  # Not implemented yet
+
+# Environment-specific overrides
+# These can be overridden by environment variables with prefix AI4D_
+# Example: AI4D_DATABASE_DEFAULT_PATH will override database.default_path
+environment_overrides:
+  - "database.default_path"
+  - "directories.temp_processing"
+  - "scraper.request_timeout"
+  - "pdf_processing.glossapi.max_workers"
+  - "rust_cleaner.threads"
+
+# PDF pipeline configuration
+pdf_pipeline:
+  threads: 4                    # Number of threads for PDF extraction
+  disable_sectioning: true      # Skip GlossAPI document sectioning step
+  request_timeout: 30          # Timeout for URL requests during redirect processing
+  concurrency_limit: 20       # Max concurrent requests for redirect processing
+  max_retries: 3              # Max retries for failed requests
+
+# Python environment configuration
+python:
+  venv_path: "/mnt/data/venv/bin/python" 

@@ -1,0 +1,24 @@
+2025-05-30 11:18:49,101 - INFO - Starting document export process
+2025-05-30 11:18:49,136 - WARNING - No documents found to process
+2025-05-30 11:18:49,136 - ERROR - Export failed or no documents to process
+2025-05-30 11:19:02,121 - INFO - Starting document export process
+2025-05-30 11:19:02,139 - WARNING - No documents found to process
+2025-05-30 11:19:02,139 - ERROR - Export failed or no documents to process
+2025-05-30 11:20:26,076 - INFO - Loading configuration from: /mnt/data/AI4Deliberation/config/pipeline_config.yaml
+2025-05-30 11:20:26,083 - INFO - Configuration loaded successfully from file
+2025-05-30 11:20:26,083 - INFO - Configuration validation passed
+2025-05-30 11:20:26,083 - INFO - Starting document export process
+2025-05-30 11:20:26,672 - INFO - Found 4 non-law_draft documents to process
+2025-05-30 11:20:26,673 - INFO -   analysis: 4 documents (100.0%)
+2025-05-30 11:20:26,681 - INFO - Successfully exported 4 documents to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:26,681 - INFO - Export complete
+2025-05-30 11:20:26,681 - INFO - Next steps: Run the URL redirect handler to resolve the URLs in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:32,518 - INFO - Loading configuration from: /mnt/data/AI4Deliberation/config/pipeline_config.yaml
+2025-05-30 11:20:32,524 - INFO - Configuration loaded successfully from file
+2025-05-30 11:20:32,524 - INFO - Configuration validation passed
+2025-05-30 11:20:32,524 - INFO - Starting document export process
+2025-05-30 11:20:33,116 - INFO - Found 4 non-law_draft documents to process
+2025-05-30 11:20:33,117 - INFO -   analysis: 4 documents (100.0%)
+2025-05-30 11:20:33,125 - INFO - Successfully exported 4 documents to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:33,125 - INFO - Export complete
+2025-05-30 11:20:33,125 - INFO - Next steps: Run the URL redirect handler to resolve the URLs in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet

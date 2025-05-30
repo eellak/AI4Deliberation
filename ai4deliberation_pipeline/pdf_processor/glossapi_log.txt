@@ -1,0 +1,73 @@
+2025-05-30 11:18:54,742 - INFO - Starting PDF processing with GlossAPI
+2025-05-30 11:18:54,742 - ERROR - Input parquet file not found: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:18:54,742 - INFO - Please run export_documents_to_parquet.py and process_document_redirects.py first
+2025-05-30 11:18:54,742 - ERROR - PDF processing failed
+2025-05-30 11:20:42,705 - INFO - Starting PDF processing with GlossAPI
+2025-05-30 11:20:42,709 - INFO - Loaded 4 documents from /mnt/data/AI4Deliberation/pdf_pipeline/workspace/documents.parquet
+2025-05-30 11:20:42,712 - INFO - Saved document ID mapping to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/document_id_mapping.parquet
+2025-05-30 11:20:42,712 - INFO - Creating GlossAPI Corpus object
+2025-05-30 11:20:42,713 - INFO - Starting PDF download
+2025-05-30 11:20:42,713 - INFO - Using parquet file: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/document_id_mapping.parquet
+2025-05-30 11:20:42,715 - INFO - Total URLs in input file: 4
+2025-05-30 11:20:42,715 - INFO - No existing download results found or usable
+2025-05-30 11:20:42,716 - INFO - Downloading files from URLs in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/document_id_mapping.parquet...
+2025-05-30 11:20:42,716 - INFO - Loading parquet file: /mnt/data/AI4Deliberation/pdf_pipeline/workspace/document_id_mapping.parquet
+2025-05-30 11:20:42,717 - INFO - Starting download with concurrency=5, rate_limit=100/60s
+2025-05-30 11:20:42,719 - INFO - Found 4 unprocessed rows out of 4 total
+2025-05-30 11:20:42,719 - INFO - Processing batch 1 of 1: rows 0 to 3
+2025-05-30 11:20:44,101 - INFO - Successfully downloaded AAA_000.pdf from http://www.opengov.gr/ypoian/wp-content/uploads/downloads/2025/04/%CE%91%CE%A3%CE%A5%CE%A1-%CE%91%CE%9D%CE%91%CE%A0%CE%A4%CE%A5%CE%9E%CE%99%CE%91%CE%9A%CE%9F%CE%A3.pdf
+2025-05-30 11:20:44,105 - INFO - Successfully downloaded AAB_001.pdf from http://www.opengov.gr/ypoian/wp-content/uploads/downloads/2025/05/%CE%91%CE%A3%CE%A5%CE%A1-%CE%A5%CE%A0%CE%91%CE%9D.pdf
+2025-05-30 11:20:44,110 - INFO - Successfully downloaded AAC_002.pdf from http://www.opengov.gr/civilprotection/wp-content/uploads/downloads/2025/05/%CE%91%CE%BD%CE%B1%CC%81%CE%BB%CF%85%CF%83%CE%B7-%CF%83%CF%85%CE%BD%CE%B5%CF%80%CE%B5%CE%B9%CF%89%CC%81%CE%BD-%CF%81%CF%85%CC%81%CE%B8%CE%BC%CE%B9%CF%83%CE%B7%CF%82.pdf
+2025-05-30 11:20:44,196 - INFO - Successfully downloaded AAD_003.pdf from http://www.opengov.gr/ypep/wp-content/uploads/downloads/2025/05/%CE%91%CE%BD%CE%B1%CC%81%CE%BB%CF%85%CF%83%CE%B7-%CE%A3%CF%85%CE%BD%CE%B5%CF%80%CE%B5%CE%B9%CF%89%CC%81%CE%BD-%CE%A1%CF%85%CC%81%CE%B8%CE%BC%CE%B9%CF%83%CE%B7%CF%82.pdf
+2025-05-30 11:20:44,197 - INFO - Download complete: 4 successful, 0 failed, files downloaded to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/downloads
+2025-05-30 11:20:44,199 - INFO - Saved download results to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results_document_id_mapping.parquet
+2025-05-30 11:20:44,200 - INFO - Download complete. 4 files downloaded to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/downloads
+2025-05-30 11:20:44,200 - INFO - Download completed in 1.5 seconds
+2025-05-30 11:20:44,200 - INFO - Starting text extraction with 4 threads
+2025-05-30 11:20:44,200 - INFO - Extracting all files to markdown...
+2025-05-30 11:20:44,203 - INFO - Found 4 .pdf files in downloads directory
+2025-05-30 11:20:44,203 - INFO - Found 4 files to extract
+2025-05-30 11:20:44,203 - INFO - Processing 4 files...
+2025-05-30 11:20:44,204 - INFO - No state file found, checking for existing output files in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/markdown
+2025-05-30 11:20:44,204 - INFO - Found 0 already processed files
+2025-05-30 11:20:44,204 - INFO - Found 0 problematic files
+2025-05-30 11:20:44,204 - INFO - Processing 4 out of 4 files
+2025-05-30 11:20:44,204 - INFO - Processing batch 1/1 (4 files)
+2025-05-30 11:20:44,233 - INFO - Going to convert document batch...
+2025-05-30 11:20:44,233 - INFO - Initializing pipeline for StandardPdfPipeline with options hash 4bc03f7323f97e63a0e9ce0282d09f91
+2025-05-30 11:20:44,244 - INFO - Loading plugin 'docling_defaults'
+2025-05-30 11:20:44,245 - INFO - Registered ocr engines: ['easyocr', 'ocrmac', 'rapidocr', 'tesserocr', 'tesseract']
+2025-05-30 11:20:44,348 - INFO - Accelerator device: 'cuda:0'
+2025-05-30 11:20:48,185 - INFO - Accelerator device: 'cuda:0'
+2025-05-30 11:20:48,560 - INFO - Loading plugin 'docling_defaults'
+2025-05-30 11:20:48,560 - INFO - Registered picture descriptions: ['vlm', 'api']
+2025-05-30 11:20:48,561 - INFO - Processing document AAA_000.pdf
+2025-05-30 11:21:17,219 - INFO - Finished converting document AAA_000.pdf in 33.02 sec.
+2025-05-30 11:21:17,766 - INFO - Processing document AAC_002.pdf
+2025-05-30 11:21:25,526 - INFO - Finished converting document AAC_002.pdf in 8.31 sec.
+2025-05-30 11:21:25,685 - INFO - Going to convert document batch...
+2025-05-30 11:21:25,685 - INFO - Processing document AAD_003.pdf
+2025-05-30 11:21:31,381 - INFO - Finished converting document AAD_003.pdf in 5.85 sec.
+2025-05-30 11:21:31,638 - INFO - Processing document AAB_001.pdf
+2025-05-30 11:23:10,594 - INFO - Finished converting document AAB_001.pdf in 99.21 sec.
+2025-05-30 11:23:10,948 - INFO - Batch processed in 146.74 seconds
+2025-05-30 11:23:10,949 - INFO - Progress: 4/4 files (0 problematic)
+2025-05-30 11:23:10,949 - INFO - All files have been processed
+2025-05-30 11:23:10,949 - INFO - Preserving processing state file for resumption functionality
+2025-05-30 11:23:10,949 - INFO - Document extraction complete in 146.75 seconds.
+2025-05-30 11:23:10,949 - INFO - Successfully extracted: 4
+2025-05-30 11:23:10,949 - INFO - Partially extracted: 0
+2025-05-30 11:23:10,949 - INFO - Extraction complete. Markdown files saved to /mnt/data/AI4Deliberation/pdf_pipeline/workspace/markdown
+2025-05-30 11:23:10,955 - INFO - Found metadata parquet with filename (URL not required): /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results_document_id_mapping.parquet
+2025-05-30 11:23:10,955 - INFO - Analyzing markdown files and updating parquet file with extraction quality...
+2025-05-30 11:23:10,960 - INFO - Found metadata parquet with filename (URL not required): /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results_document_id_mapping.parquet
+2025-05-30 11:23:11,726 - INFO - Extraction quality assessment complete and saved to parquet.
+2025-05-30 11:23:11,728 - INFO - Found extraction quality information in /mnt/data/AI4Deliberation/pdf_pipeline/workspace/download_results/download_results_document_id_mapping.parquet
+2025-05-30 11:23:11,728 - INFO - Found 4 good quality files and 0 bad quality files in parquet
+2025-05-30 11:23:11,728 - INFO - Extraction completed in 147.5 seconds
+2025-05-30 11:23:11,728 - INFO - Document sectioning disabled - skipping this step
+2025-05-30 11:23:11,729 - WARNING - Download results file not found
+2025-05-30 11:23:11,729 - INFO - PDF processing with GlossAPI complete
+2025-05-30 11:23:11,729 - INFO - Files are available in /mnt/data/AI4Deliberation/pdf_pipeline/workspace
+2025-05-30 11:23:11,729 - INFO - Next step: Run update_database_with_content.py to update the database
+2025-05-30 11:23:11,730 - INFO - PDF processing completed successfully
