@@ -12,21 +12,12 @@ It may involve:
 - Evaluating summary quality.
 
 ## 2. Key Scripts and Modules
-(To be filled based on investigation of the folder contents. Examples below)
-- `orchestrate_summarization_v2.py`: Likely the main script for running the summarization workflow.
-- `prompts.py` (if exists): Contains prompt templates for Gemma.
-- `utils.py` (if exists): Helper functions for data loading, preprocessing, etc.
-- `run_summarization.py`: Potentially another entry point or a part of the workflow.
+Refer to the main `TODO_DOCUMENTATION.md` in the project root for items to be documented.
 
 ## 3. Workflow
-(Detailed description of the summarization process, from input text to final summary).
-- Input data format.
-- Preprocessing steps.
-- Interaction with Gemma models (API calls, local inference).
-- Postprocessing of summaries.
+Refer to the main `TODO_DOCUMENTATION.md` in the project root for items to be documented.
 
 ## 4. Programmatic Usage
-(How to run the summarization task, required inputs, parameters).
 
 ```python
 # Example (conceptual)
@@ -36,10 +27,10 @@ It may involve:
 ```
 
 ## 5. Configuration
-(Details on how to configure the summarization task, e.g., model choice, API keys, length constraints).
+Refer to the main `TODO_DOCUMENTATION.md` in the project root for items to be documented.
 
 ## 6. Dependencies
-(List any specific Python packages or external dependencies beyond the main project ones).
+Refer to the main `TODO_DOCUMENTATION.md` in the project root for items to be documented.
 
 ## 7. Future Enhancements & TODOs
-(Planned improvements, areas for further research or development). 
+Refer to the main `TODO_DOCUMENTATION.md` in the project root for planned improvements. 

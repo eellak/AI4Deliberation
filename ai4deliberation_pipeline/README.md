@@ -43,7 +43,6 @@ The pipeline is primarily orchestrated by `master/pipeline_orchestrator.py`.
 -   **`requirements.txt`**: Python dependencies.
 
 ## 3. Programmatic Usage
-(Details on how to run the pipeline, e.g., using `run_pipeline_entry` from `master.pipeline_orchestrator`, different modes of operation, configuration options).
 
 ```python
 # Example (conceptual)
@@ -70,4 +69,4 @@ See `requirements.txt`. Key dependencies include:
 - `text-cleaner-rs` (custom Rust bindings)
 
 ## 6. Future Enhancements & TODOs
-(List of planned improvements or areas needing work, can refer to `PIPELINE_WORKFLOW_CHECKLIST.md` and the main `TODO_DOCUMENTATION.md`). 
+Refer to the main `TODO_DOCUMENTATION.md` in the project root and the `PIPELINE_WORKFLOW_CHECKLIST.md` for planned improvements. 
