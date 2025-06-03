@@ -49,13 +49,13 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
     metadata_result = scrape_consultation_metadata(url)
     if not metadata_result:
         logger.error(f"Failed to scrape metadata from {url}")
-        return False
+        return False, None
     
     # Validate post_id - if it's None, we can't proceed
     consultation_data = metadata_result['consultation']
     if not consultation_data['post_id']:
         logger.error(f"Missing post_id for URL: {url}. This consultation was likely redirected or no longer exists.")
-        return False
+        return False, None
     
     # Step 2: Extract ministry data and find or create ministry record
     ministry_data = metadata_result['ministry']
@@ -120,7 +120,7 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
                     'message': 'Consultation is finished - no updates performed'
                 }
             else:
-                return True  # Success but no changes made
+                return True, existing_consultation.id
         
         # RULE 2: If consultation is unfinished, only update comments and documents
         logger.info("🔄 CONSULTATION IS UNFINISHED - Checking for new comments and documents")
@@ -226,7 +226,6 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
         else:
             logger.info(f"Adding article: {article_data['title']}")
             article = Article(
-                post_id=article_data['post_id'],
                 title=article_data['title'],
                 content=article_data['content'],
                 raw_html=article_data.get('raw_html', ''),  # Include raw HTML content
@@ -268,15 +267,20 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
     # Update accepted_comments with the actual count
     consultation.accepted_comments = total_comment_count
     
-    # Commit all changes to the database
-    session.commit()
-    
-    logger.info(f"Scrape complete. Added/updated: {article_count} articles, {comment_count} comments")
-    
-    if selective_update:
-        return True, changes
-    else:
-        return True
+    try:
+        session.commit()
+        logger.info(f"Successfully processed and committed data for consultation ID: {consultation.id}")
+        if selective_update:
+            return True, changes
+        else:
+            return True, consultation.id
+    except Exception as e:
+        logger.error(f"Database commit failed for {url}: {e}")
+        session.rollback()
+        if selective_update:
+            return False, changes
+        else:
+            return False, None
 
 def main():
     """Main entry point for the program"""

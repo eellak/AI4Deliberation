@@ -16,10 +16,11 @@ import tempfile
 import pandas as pd
 import sqlite3
 from pathlib import Path
+import argparse
+from datetime import datetime # For updated_at
 
-# Add the master_pipeline to path for configuration utilities
-sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'master_pipeline'))
-from utils import load_config
+# Import configuration utilities
+from config.config_manager import load_config
 
 # Import the Rust text cleaner module
 try:
@@ -35,13 +36,18 @@ class RustProcessor:
     Configuration-integrated Rust processor for document cleaning and analysis.
     """
     
-    def __init__(self):
+    def __init__(self, db_path_override: str = None):
         """Initialize Rust processor with configuration."""
         self.config = load_config()
         self.logger = self._setup_logging()
         
-        # Get database path from config
-        self.database_path = self.config['database']['default_path']
+        # Get database path from config or override
+        if db_path_override:
+            self.database_path = db_path_override
+            self.logger.info(f"Using overridden database path: {self.database_path}")
+        else:
+            self.database_path = self.config['database']['default_path']
+            self.logger.info(f"Using database path from config: {self.database_path}")
         
         # Rust cleaner settings from config
         rust_config = self.config.get('rust_cleaner', {})
@@ -87,7 +93,7 @@ class RustProcessor:
     
     def get_documents_needing_cleaning(self):
         """
-        Get documents that have content but need Rust cleaning.
+        Get documents that have processed_text but need Rust cleaning.
         
         Returns:
             list: List of document dictionaries with content that needs cleaning
@@ -96,13 +102,13 @@ class RustProcessor:
             conn = sqlite3.connect(self.database_path)
             cursor = conn.cursor()
             
-            # Query for documents with content but no cleaned content
+            # Query for documents with processed_text but no/empty content_cleaned
             query = """
-            SELECT id, type, content, content_cleaned, badness_score
+            SELECT id, type, processed_text
             FROM documents
-            WHERE content IS NOT NULL 
-            AND content != ''
-            AND content_cleaned IS NULL
+            WHERE processed_text IS NOT NULL 
+            AND processed_text != ''
+            AND (content_cleaned IS NULL OR content_cleaned = '')
             ORDER BY id
             """
             
@@ -112,15 +118,14 @@ class RustProcessor:
             
             documents = []
             for row in rows:
-                doc_id, doc_type, content, content_cleaned, badness_score = row
+                doc_id, doc_type, source_text = row
                 documents.append({
                     'id': doc_id,
                     'type': doc_type,
-                    'content': content,
-                    'content_cleaned': content_cleaned,
-                    'badness_score': badness_score
+                    'source_text': source_text,
                 })
             
+            self.logger.info(f"Found {len(documents)} documents with 'processed_text' needing cleaning.")
             return documents
             
         except Exception as e:
@@ -132,7 +137,7 @@ class RustProcessor:
         Process documents through the Rust text cleaner.
         
         Args:
-            documents: List of document dictionaries to process
+            documents: List of document dictionaries to process (expecting 'id' and 'source_text')
             
         Returns:
             dict: Results with cleaned content and metrics
@@ -153,32 +158,39 @@ class RustProcessor:
             os.makedirs(temp_output_dir, exist_ok=True)
             
             # Write documents to temporary markdown files
-            doc_id_to_filename = {}
             for doc in documents:
                 filename = f"doc_{doc['id']}.md"
                 filepath = os.path.join(temp_input_dir, filename)
-                doc_id_to_filename[doc['id']] = filename
                 
                 with open(filepath, 'w', encoding='utf-8') as f:
-                    f.write(doc['content'])
+                    f.write(doc['source_text'])
             
-            self.logger.info(f"Created {len(documents)} temporary markdown files")
+            self.logger.info(f"Created {len(documents)} temporary markdown files in {temp_input_dir}")
             
             # Run Rust text cleaner
             try:
                 start_time = time.time()
-                self.logger.info(f"Running Rust cleaner with {self.threads} threads, scripts: {self.scripts}")
                 
                 # Parse scripts for Rust
-                user_scripts = [s.strip() for s in self.scripts.split(',') if s.strip()]
-                base_scripts = ["punctuation", "numbers", "common_symbols"]
-                final_scripts = list(set(user_scripts + base_scripts))
+                user_scripts_from_config = [s.strip() for s in self.scripts.split(',') if s.strip()]
                 
+                mapped_scripts = []
+                for s_config in user_scripts_from_config:
+                    if s_config.lower() == 'lat':
+                        mapped_scripts.append('latin')
+                    elif s_config.lower() == 'grc':
+                        mapped_scripts.append('greek')
+                    else:
+                        mapped_scripts.append(s_config.lower())
+
+                final_scripts_to_pass = list(set(mapped_scripts + ["punctuation", "numbers", "common_symbols"]))
+                self.logger.info(f"Running Rust cleaner with {self.threads} threads, scripts_to_keep: {final_scripts_to_pass}")
+
                 text_cleaner_rs.generate_analysis_report_for_directory(
                     temp_input_dir,
                     temp_csv_path,
                     temp_output_dir,
-                    final_scripts,
+                    final_scripts_to_pass,
                     self.threads
                 )
                 
@@ -186,7 +198,7 @@ class RustProcessor:
                 self.logger.info(f"Rust processing completed in {elapsed:.2f} seconds")
                 
             except Exception as e:
-                self.logger.error(f"Error running Rust text cleaner: {e}")
+                self.logger.error(f"Error running Rust text cleaner: {e}", exc_info=True)
                 return {}
             
             # Read the analysis results
@@ -194,39 +206,48 @@ class RustProcessor:
             try:
                 if os.path.exists(temp_csv_path):
                     df = pd.read_csv(temp_csv_path)
-                    self.logger.info(f"Read analysis results for {len(df)} files")
+                    self.logger.info(f"Read analysis results for {len(df)} files from {temp_csv_path}")
                     
                     for _, row in df.iterrows():
-                        filename = row['File Name']  # Correct column name
-                        # Extract document ID from filename
+                        filename = row.get('File Name')
+                        if not filename:
+                            self.logger.warning(f"Skipping row with missing 'File Name' in CSV: {row.to_dict()}")
+                            continue
+
                         if filename.startswith('doc_') and filename.endswith('.md'):
-                            doc_id = int(filename[4:-3])  # Remove 'doc_' and '.md'
+                            try:
+                                doc_id = int(filename[4:-3])
+                            except ValueError:
+                                self.logger.warning(f"Could not parse doc_id from filename: {filename}. Skipping.")
+                                continue
                             
-                            # Read cleaned content if available
                             cleaned_filepath = os.path.join(temp_output_dir, filename)
                             cleaned_content = None
                             if os.path.exists(cleaned_filepath):
                                 with open(cleaned_filepath, 'r', encoding='utf-8') as f:
                                     cleaned_content = f.read()
+                            else:
+                                self.logger.warning(f"Cleaned file not found for {filename} at {cleaned_filepath}")
                             
-                            # Parse percentages (remove % sign)
-                            greek_pct_str = str(row.get('Greek Percentage', '0%')).replace('%', '')
-                            latin_pct_str = str(row.get('Latin Percentage', '0%')).replace('%', '')
-                            
+                            greek_pct_str = str(row.get('Greek Percentage', '0')).replace('%', '')
+                            latin_pct_str = str(row.get('Latin Percentage', '0')).replace('%', '')
+                            badness_score_val = row.get('Badness Score')
+                            if badness_score_val is None:
+                                badness_score_val = row.get('Badness')
+
                             results[doc_id] = {
                                 'cleaned_content': cleaned_content,
-                                'badness_score': float(row.get('Badness', 0.0)),
+                                'badness_score': float(badness_score_val) if badness_score_val is not None else 1.0,
                                 'greek_percentage': float(greek_pct_str) if greek_pct_str else 0.0,
-                                'english_percentage': float(latin_pct_str) if latin_pct_str else 0.0,  # Using Latin as English
-                                'total_chars': len(cleaned_content) if cleaned_content else 0,
-                                'good_chars': 0  # Not provided by this version of Rust cleaner
+                                'english_percentage': float(latin_pct_str) if latin_pct_str else 0.0,
                             }
+                        else:
+                            self.logger.warning(f"Filename '{filename}' in CSV does not match expected 'doc_*.md' format. Skipping.")
                 else:
-                    self.logger.warning("No analysis CSV found")
+                    self.logger.warning(f"No analysis CSV found at {temp_csv_path}")
                     
             except Exception as e:
-                self.logger.error(f"Error reading analysis results: {e}")
-                return {}
+                self.logger.error(f"Error reading analysis results from {temp_csv_path}: {e}", exc_info=True)
         
         return results
     
@@ -238,55 +259,56 @@ class RustProcessor:
             results: Dictionary of document_id -> cleaning results
             
         Returns:
-            bool: Success status
+            bool: Success status (True if any updates attempted)
         """
         if not results:
-            self.logger.warning("No results to update")
+            self.logger.warning("No results to update in database.")
             return False
-        
+
+        updated_count = 0
         try:
-            # Use SQLite directly for reliable updates
             conn = sqlite3.connect(self.database_path)
             cursor = conn.cursor()
-            self.logger.info("Connected to database using SQLite")
-        
-            update_count = 0
-            error_count = 0
             
-            for doc_id, result in results.items():
+            for doc_id, data in results.items():
+                if data.get('cleaned_content') is None:
+                    self.logger.warning(f"Skipping DB update for doc_id {doc_id} as cleaned_content is missing.")
+                    continue
+
                 try:
-                    cursor.execute(
-                        """UPDATE documents 
-                           SET content_cleaned = ?, badness_score = ?, 
-                               greek_percentage = ?, english_percentage = ?
-                           WHERE id = ?""",
-                        (result['cleaned_content'], result['badness_score'],
-                         result['greek_percentage'], result['english_percentage'], doc_id)
-                    )
+                    cursor.execute("""
+                        UPDATE documents
+                        SET content_cleaned = ?, 
+                            badness_score = ?, 
+                            greek_percentage = ?, 
+                            english_percentage = ?,
+                            updated_at = ? 
+                        WHERE id = ?
+                    """, (
+                        data['cleaned_content'],
+                        data.get('badness_score', 1.0),
+                        data.get('greek_percentage', 0.0),
+                        data.get('english_percentage', 0.0),
+                        datetime.utcnow().isoformat(),
+                        doc_id
+                    ))
                     if cursor.rowcount > 0:
-                        update_count += 1
+                        updated_count += 1
+                        self.logger.debug(f"Updated document {doc_id} with cleaning results.")
                     else:
-                        self.logger.warning(f"Document {doc_id} not found")
-                    
-                    # Commit in batches
-                    if update_count % 50 == 0:
-                        conn.commit()
-                        self.logger.info(f"Updated {update_count} documents so far")
-                        
-                except Exception as e:
-                    self.logger.error(f"Error updating document {doc_id}: {e}")
-                    error_count += 1
+                        self.logger.warning(f"No rows updated for document {doc_id}. It might not exist or match conditions.")
+                except sqlite3.Error as e_sql:
+                    self.logger.error(f"SQL error updating document {doc_id}: {e_sql}. Data: {data}")
             
-            # Final commit
             conn.commit()
             conn.close()
-            
-            self.logger.info(f"Database update complete: {update_count} updated, {error_count} errors")
-            return update_count > 0
+            self.logger.info(f"Successfully updated {updated_count} documents in the database.")
+            return updated_count > 0
             
         except Exception as e:
-            self.logger.error(f"Error updating database: {e}")
-            if 'conn' in locals():
+            self.logger.error(f"Error updating database with results: {e}", exc_info=True)
+            if 'conn' in locals() and conn:
+                conn.rollback()
                 conn.close()
             return False
     
@@ -341,12 +363,21 @@ class RustProcessor:
     
     def get_cleaning_stats(self):
         """
-        Get statistics about documents and their cleaning status.
+        Get cleaning statistics from the database.
         
         Returns:
-            dict: Statistics about document cleaning
+            dict: Dictionary with cleaning statistics
         """
         try:
+            if not os.path.exists(self.database_path):
+                self.logger.error(f"Database file not found at {self.database_path}")
+                return {
+                    "error": f"Database file not found at {self.database_path}",
+                    "avg_badness": None, "min_badness": None, "max_badness": None,
+                    "avg_greek": None, "avg_english": None,
+                    "docs_with_content": 0, "docs_cleaned": 0, "docs_needing_cleaning": 0
+                }
+
             conn = sqlite3.connect(self.database_path)
             cursor = conn.cursor()
             
@@ -355,11 +386,11 @@ class RustProcessor:
             
             # Total documents with content
             cursor.execute("SELECT COUNT(*) FROM documents WHERE content IS NOT NULL AND content != ''")
-            stats['total_with_content'] = cursor.fetchone()[0]
+            stats['docs_with_content'] = cursor.fetchone()[0]
             
             # Documents with cleaned content
             cursor.execute("SELECT COUNT(*) FROM documents WHERE content_cleaned IS NOT NULL")
-            stats['total_cleaned'] = cursor.fetchone()[0]
+            stats['docs_cleaned'] = cursor.fetchone()[0]
             
             # Documents needing cleaning
             cursor.execute("""
@@ -367,7 +398,7 @@ class RustProcessor:
                 WHERE content IS NOT NULL AND content != '' 
                 AND content_cleaned IS NULL
             """)
-            stats['need_cleaning'] = cursor.fetchone()[0]
+            stats['docs_needing_cleaning'] = cursor.fetchone()[0]
             
             # Badness score statistics
             cursor.execute("""
@@ -376,9 +407,9 @@ class RustProcessor:
             """)
             row = cursor.fetchone()
             if row and row[0] is not None:
-                stats['badness_avg'] = round(row[0], 3)
-                stats['badness_min'] = round(row[1], 3)
-                stats['badness_max'] = round(row[2], 3)
+                stats['avg_badness'] = round(row[0], 3)
+                stats['min_badness'] = round(row[1], 3)
+                stats['max_badness'] = round(row[2], 3)
             
             # Language percentages
             cursor.execute("""
@@ -387,8 +418,8 @@ class RustProcessor:
             """)
             row = cursor.fetchone()
             if row and row[0] is not None:
-                stats['avg_greek_pct'] = round(row[0], 1)
-                stats['avg_english_pct'] = round(row[1], 1)
+                stats['avg_greek'] = round(row[0], 1)
+                stats['avg_english'] = round(row[1], 1)
             
             conn.close()
             return stats
@@ -410,36 +441,89 @@ def process_with_rust_cleaner():
 
 
 def get_rust_cleaning_stats():
-    """
-    Get statistics about Rust cleaning progress.
+    """Get Rust cleaning statistics."""
+    logger = logging.getLogger('rust_processor_cli')
+    logger.info("Getting Rust cleaning stats...")
     
-    Returns:
-        dict: Cleaning statistics
-    """
-    processor = RustProcessor()
-    return processor.get_cleaning_stats()
+    # Create a dummy RustProcessor instance to access its get_cleaning_stats method
+    # This will use the DB path from config unless overridden by a potential CLI arg later
+    # For now, this assumes get_cleaning_stats in main() will handle DB path
+    processor = RustProcessor() 
+    stats = processor.get_cleaning_stats()
+    
+    if stats.get("error"):
+        logger.error(f"Error getting cleaning stats: {stats['error']}")
+        return
+
+    logger.info(f"Documents with content: {stats['docs_with_content']}")
+    logger.info(f"Documents cleaned: {stats['docs_cleaned']}")
+    logger.info(f"Documents needing cleaning: {stats['docs_needing_cleaning']}")
+    if stats['avg_badness'] is not None:
+        logger.info(f"Average badness score: {stats['avg_badness']:.3f} (range: {stats['min_badness']:.3f}-{stats['max_badness']:.3f})")
+        logger.info(f"Average Greek content: {stats['avg_greek']:.1f}%")
+        logger.info(f"Average English content: {stats['avg_english']:.1f}%")
+    else:
+        logger.info("No badness scores found to analyze.")
+
+
+def main():
+    """Main function to run Rust processor or get stats."""
+    # Setup basic logging for main entry point if not already configured
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger('rust_processor_main')
+
+    parser = argparse.ArgumentParser(description="Rust Processor CLI")
+    parser.add_argument(
+        "--process", 
+        action="store_true", 
+        help="Run the full Rust cleaning process on all documents."
+    )
+    parser.add_argument(
+        "--stats", 
+        action="store_true", 
+        help="Get cleaning statistics from the database."
+    )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Override the database path specified in the config."
+    )
+    
+    args = parser.parse_args()
+
+    if args.process:
+        logger.info("Starting Rust processing for all documents...")
+        processor_instance = RustProcessor(db_path_override=args.db_path)
+        processor_instance.process_all_documents()
+        logger.info("Rust processing completed.")
+    elif args.stats:
+        logger.info("Getting Rust cleaning stats...")
+        # Pass db_path_override to the RustProcessor instance used by get_cleaning_stats
+        processor_for_stats = RustProcessor(db_path_override=args.db_path)
+        stats = processor_for_stats.get_cleaning_stats()
+
+        if stats.get("error"):
+            logger.error(f"Error getting cleaning stats: {stats['error']}")
+            return
+
+        logger.info(f"Database: {processor_for_stats.database_path}")
+        logger.info(f"Documents with content: {stats['docs_with_content']}")
+        logger.info(f"Documents cleaned: {stats['docs_cleaned']}")
+        logger.info(f"Documents needing cleaning: {stats['docs_needing_cleaning']}")
+        if stats['avg_badness'] is not None and stats['docs_cleaned'] > 0 :
+            logger.info(f"Average badness score: {stats['avg_badness']:.3f} (range: {stats['min_badness']:.3f}-{stats['max_badness']:.3f})")
+            logger.info(f"Average Greek content: {stats['avg_greek']:.1f}%")
+            logger.info(f"Average English content: {stats['avg_english']:.1f}%")
+        elif stats['docs_cleaned'] == 0:
+            logger.info("No documents have been cleaned yet in this database.")
+        else:
+            logger.info("No badness scores found to analyze or docs_cleaned is 0.")
+            
+    else:
+        logger.info("No action specified. Use --process or --stats.")
+        parser.print_help()
 
 
 if __name__ == "__main__":
-    # Run the Rust cleaning pipeline
-    import argparse
-    
-    parser = argparse.ArgumentParser(description='Rust Text Cleaner Pipeline')
-    parser.add_argument('--stats', action='store_true',
-                       help='Show cleaning statistics')
-    
-    args = parser.parse_args()
-    
-    if args.stats:
-        stats = get_rust_cleaning_stats()
-        print(f"Documents with content: {stats.get('total_with_content', 0)}")
-        print(f"Documents cleaned: {stats.get('total_cleaned', 0)}")
-        print(f"Documents needing cleaning: {stats.get('need_cleaning', 0)}")
-        if 'badness_avg' in stats:
-            print(f"Average badness score: {stats['badness_avg']} (range: {stats['badness_min']}-{stats['badness_max']})")
-        if 'avg_greek_pct' in stats:
-            print(f"Average Greek content: {stats['avg_greek_pct']}%")
-            print(f"Average English content: {stats['avg_english_pct']}%")
-    else:
-        success = process_with_rust_cleaner()
-        sys.exit(0 if success else 1) 
+    main() 

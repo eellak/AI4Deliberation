@@ -61,6 +61,12 @@ class ContentProcessor:
         self.config = config
         self.logger = logging.getLogger(__name__)
         
+        # Initialize processors to None initially
+        self.rust_text_cleaner = None
+        self.markdownify = None
+        self.Corpus = None # For GlossAPI PDF extraction
+        self.pd = None # Pandas for GlossAPI
+
         # Set up directories
         self.temp_processing = config['directories']['temp_processing']
         self.pdfs_dir = config['directories']['pdfs']
@@ -74,19 +80,67 @@ class ContentProcessor:
         self._setup_processors()
     
     def _setup_processors(self):
-        """Setup the processing modules."""
+        """Setup the processing modules. Failures are logged but don't stop ContentProcessor instantiation."""
+        # Ensure the glossapi editable install path is discoverable
+        glossapi_parent_dir = "/mnt/data/glossAPI"
+        if glossapi_parent_dir not in sys.path:
+            sys.path.insert(0, glossapi_parent_dir) # Insert at the beginning for priority
+
         try:
             # Import Rust text cleaner
             import text_cleaner_rs
-            self.rust_cleaner = text_cleaner_rs
-            
+            self.rust_text_cleaner = text_cleaner_rs
+            self.logger.info("Successfully imported and assigned text_cleaner_rs.")
+        except ImportError as e:
+            self.logger.error(f"Failed to import text_cleaner_rs: {e}. Rust cleaner will NOT be available.")
+            # self.rust_text_cleaner remains None
+        
+        try:
             # Import markdownify for HTML processing
             import markdownify
             self.markdownify = markdownify
-            
+            self.logger.info("Successfully imported markdownify.")
         except ImportError as e:
-            self.logger.error(f"Failed to import required modules: {e}")
-            raise
+            self.logger.error(f"Failed to import markdownify: {e}. HTML to Markdown processing will NOT be available.")
+            # self.markdownify remains None
+
+        try:
+            # Attempt to import GlossAPI and pandas for PDF processing
+            # This is an optional component, so failure is not fatal to ContentProcessor
+            # but will limit PDF processing capabilities.
+            # Check if glossapi is enabled in config
+            if self.config.get('pdf_processing', {}).get('docling_provider', '').lower() == 'glossapi':
+                try:
+                    from glossapi.corpus import Corpus
+                    self.Corpus = Corpus
+                    import pandas as pd
+                    self.pd = pd
+                    self.logger.info("Successfully imported GlossAPI (Corpus) and pandas for PDF processing.")
+                except ImportError as e_glossapi:
+                    self.logger.warning(f"GlossAPI or pandas could not be imported: {e_glossapi}. PDF extraction via GlossAPI will not be available.")
+                    self.Corpus = None
+                    self.pd = None
+                    # Check for custom path if primary import fails
+                    glossapi_path = self.config.get('pdf_processing', {}).get('glossapi_custom_path')
+                    if glossapi_path and os.path.exists(glossapi_path):
+                        if glossapi_path not in sys.path:
+                            sys.path.append(glossapi_path)
+                        try:
+                            from glossapi.corpus import Corpus
+                            self.Corpus = Corpus
+                            # Pandas should be a general dependency, try importing again if Corpus succeeded from custom path
+                            import pandas as pd 
+                            self.pd = pd
+                            self.logger.info(f"Successfully imported GlossAPI (Corpus) and pandas from custom path: {glossapi_path}")
+                        except ImportError as e_custom_glossapi:
+                            self.logger.warning(f"Failed to import GlossAPI or pandas even from custom path {glossapi_path}: {e_custom_glossapi}")
+                            self.Corpus = None
+                            self.pd = None 
+            else:
+                self.logger.info("GlossAPI PDF processing is not enabled in config. Skipping GlossAPI import attempt.")
+
+        except Exception as e_setup:
+            self.logger.error(f"An unexpected error occurred during _setup_processors: {e_setup}")
     
     def download_pdf(self, url: str, filename: str) -> Optional[str]:
         """
@@ -151,26 +205,17 @@ class ContentProcessor:
         Returns:
             str: Extracted text content or None if failed
         """
+        if not self.Corpus or not self.pd:
+            self.logger.error("GlossAPI (Corpus) or pandas (pd) not available. Cannot extract PDF with GlossAPI.")
+            return None
+        
         try:
-            # Import GlossAPI Corpus
-            try:
-                from glossapi.corpus import Corpus
-            except ImportError:
-                self.logger.warning("GlossAPI not found, trying custom path...")
-                glossapi_path = "/mnt/data/glossapi"
-                if os.path.exists(glossapi_path):
-                    sys.path.append(glossapi_path)
-                    from glossapi.corpus import Corpus
-                else:
-                    self.logger.error("GlossAPI not available for PDF extraction")
-                    return None
-            
             # Create temporary workspace for this PDF
             with tempfile.TemporaryDirectory(prefix='pdf_extraction_') as temp_workspace:
                 # Create a simple DataFrame with just this PDF
-                import pandas as pd
+                # import pandas as pd # Use self.pd
                 
-                pdf_df = pd.DataFrame({
+                pdf_df = self.pd.DataFrame({
                     'document_id': [1],
                     'redirected_url': [f'file://{pdf_path}']
                 })
@@ -180,7 +225,7 @@ class ContentProcessor:
                 pdf_df.to_parquet(parquet_path, index=False)
                 
                 # Create GlossAPI Corpus
-                corpus = Corpus(
+                corpus = self.Corpus( # Use self.Corpus
                     input_dir=temp_workspace,
                     output_dir=temp_workspace,
                     verbose=False
@@ -360,7 +405,7 @@ class ContentProcessor:
                 self.logger.debug(f"Final scripts being passed to Rust cleaner: {final_scripts}")
                 
                 # Run Rust text cleaner
-                self.rust_cleaner.generate_analysis_report_for_directory(
+                self.rust_text_cleaner.generate_analysis_report_for_directory(
                     os.path.dirname(input_file), # input_dir
                     csv_file,                    # output_csv_path
                     output_dir,                  # output_dir_cleaned_files
@@ -531,3 +576,134 @@ class ContentProcessor:
             results.append(result)
         
         return results 
+
+    def clean_text_for_pipeline(self, text_content: str, item_type: str, item_id: int, consultation_id: int) -> Tuple[str, float, float, float]:
+        """
+        Cleans a single string of text using the Rust text_cleaner_rs module,
+        by writing it to a temporary file and processing that file.
+        This mimics how RustProcessor uses generate_analysis_report_for_directory.
+
+        Args:
+            text_content: The raw text string to clean.
+            item_type: Type of item being cleaned (e.g., "article", "document").
+            item_id: ID of the item.
+            consultation_id: ID of the parent consultation.
+
+        Returns:
+            A tuple: (cleaned_text, badness_score, greek_percentage, english_percentage)
+            Returns (original_text, 1.0, 0.0, 0.0) on failure.
+        """
+        if not self.rust_text_cleaner:
+            self.logger.warning(f"Rust cleaner not available. Returning original content for {item_type} {item_id}.")
+            return text_content, 1.0, 0.0, 0.0
+
+        if not text_content or not text_content.strip():
+            self.logger.info(f"No text content to clean for {item_type} {item_id}. Returning empty.")
+            return "", 1.0, 0.0, 0.0
+        
+        # Default values for return in case of error
+        default_return = (text_content, 1.0, 0.0, 0.0)
+
+        # Rust cleaner settings from config (similar to RustProcessor)
+        rust_config = self.config.get('rust_cleaner', {})
+        threads = rust_config.get('threads', 1) # Default to 1 thread for single item processing
+        scripts_str = rust_config.get('scripts', 'lat,grc')
+        user_scripts_from_config = [s.strip() for s in scripts_str.split(',') if s.strip()]
+        mapped_scripts = []
+        for s_config in user_scripts_from_config:
+            if s_config.lower() == 'lat': mapped_scripts.append('latin')
+            elif s_config.lower() == 'grc': mapped_scripts.append('greek')
+            else: mapped_scripts.append(s_config.lower())
+        final_scripts_to_pass = list(set(mapped_scripts + ["punctuation", "numbers", "common_symbols"]))
+
+        try:
+            with tempfile.TemporaryDirectory(prefix=f"cproc_rust_{item_type}_{item_id}_") as temp_dir:
+                temp_input_dir = os.path.join(temp_dir, 'input')
+                temp_output_dir = os.path.join(temp_dir, 'output')
+                temp_csv_path = os.path.join(temp_dir, 'analysis.csv')
+                os.makedirs(temp_input_dir, exist_ok=True)
+                os.makedirs(temp_output_dir, exist_ok=True)
+
+                # Unique filename for the single item
+                # The doc_id in generate_analysis_report_for_directory is based on filename.
+                # Format: itemType_itemId_consultationId.md for uniqueness and traceability
+                # However, the Rust code might expect simpler names if it parses IDs from them.
+                # RustProcessor uses `doc_{doc_id}.md`. We'll use a similar simple one.
+                # For pipeline, we are passing item_id, so make it `item_{item_id}.md`.
+                temp_filename = f"item_{item_id}.md"
+                temp_filepath = os.path.join(temp_input_dir, temp_filename)
+
+                with open(temp_filepath, 'w', encoding='utf-8') as f:
+                    f.write(text_content)
+                
+                self.logger.debug(f"Wrote content for {item_type} {item_id} to temp file {temp_filepath}")
+
+                self.rust_text_cleaner.generate_analysis_report_for_directory(
+                    temp_input_dir,
+                    temp_csv_path,
+                    temp_output_dir,
+                    final_scripts_to_pass,
+                    threads
+                )
+
+                if not os.path.exists(temp_csv_path):
+                    self.logger.error(f"Rust cleaner did not produce analysis.csv for {item_type} {item_id} at {temp_csv_path}")
+                    return default_return
+                
+                # Read the analysis CSV (should contain one row)
+                if not self.pd:
+                    self.logger.error("Pandas (self.pd) not available. Cannot read Rust analysis CSV.")
+                    return default_return
+                    
+                df = self.pd.read_csv(temp_csv_path)
+                if df.empty:
+                    self.logger.error(f"Rust analysis.csv is empty for {item_type} {item_id}.")
+                    return default_return
+
+                row = df.iloc[0]
+                csv_filename = row.get('File Name')
+
+                # Ensure the row from CSV corresponds to our input file
+                if csv_filename != temp_filename:
+                    self.logger.error(f"Mismatch in CSV filename. Expected {temp_filename}, got {csv_filename} for {item_type} {item_id}")
+                    return default_return
+                
+                cleaned_filepath = os.path.join(temp_output_dir, temp_filename)
+                cleaned_text_content = "" # Default to empty if file not found
+                if os.path.exists(cleaned_filepath):
+                    with open(cleaned_filepath, 'r', encoding='utf-8') as f:
+                        cleaned_text_content = f.read()
+                else:
+                    self.logger.warning(f"Cleaned file not found for {item_type} {item_id} at {cleaned_filepath}. Using empty string.")
+
+                # Extract metrics, handling potential missing columns or non-numeric values
+                badness_score_val = row.get('Badness Score')
+                if badness_score_val is None: badness_score_val = row.get('Badness') # Fallback name
+                
+                try:
+                    badness_score = float(badness_score_val) if badness_score_val is not None else 1.0
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Could not parse badness score '{badness_score_val}'. Defaulting to 1.0 for {item_type} {item_id}")
+                    badness_score = 1.0
+
+                try:
+                    greek_pct_str = str(row.get('Greek Percentage', '0')).replace('%', '')
+                    greek_percentage = float(greek_pct_str) if greek_pct_str else 0.0
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Could not parse Greek Percentage '{row.get('Greek Percentage')}'. Defaulting to 0.0 for {item_type} {item_id}")
+                    greek_percentage = 0.0
+
+                try:
+                    # Assuming 'Latin Percentage' corresponds to English for this calculation
+                    latin_pct_str = str(row.get('Latin Percentage', '0')).replace('%', '')
+                    english_percentage = float(latin_pct_str) if latin_pct_str else 0.0
+                except (ValueError, TypeError):
+                    self.logger.warning(f"Could not parse Latin Percentage '{row.get('Latin Percentage')}'. Defaulting to 0.0 for {item_type} {item_id}")
+                    english_percentage = 0.0
+                
+                self.logger.debug(f"Successfully cleaned {item_type} {item_id}. Score: {badness_score:.3f}, Greek: {greek_percentage:.2f}%, English: {english_percentage:.2f}%")
+                return cleaned_text_content, badness_score, greek_percentage, english_percentage
+
+        except Exception as e:
+            self.logger.error(f"Error during Rust cleaning for {item_type} {item_id} (consultation {consultation_id}): {e}", exc_info=True)
+            return default_return # Return original content and error scores 

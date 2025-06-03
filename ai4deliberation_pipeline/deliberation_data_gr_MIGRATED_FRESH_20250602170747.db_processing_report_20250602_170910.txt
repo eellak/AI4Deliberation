@@ -1,0 +1,54 @@
+Post-Migration Processing Report
+==================================================
+Generated: 2025-06-02 17:09:10
+Database: deliberation_data_gr_MIGRATED_FRESH_20250602170747.db
+
+Processing Statistics:
+  Documents with content: 1367
+  Documents cleaned: 1367
+  Documents needing cleaning: 0
+  Articles with content: 27975
+  Articles cleaned: 0
+
+Extraction Methods:
+  docling: 2089
+
+Article Extraction Methods:
+  markdownify: 28031
+Comment Extraction Methods:
+  markdownify: 120775
+External Document Tables:
+  nomoi: 0 records
+  ypourgikes_apofaseis: 0 records
+  proedrika_diatagmata: 0 records
+  eu_regulations: 0 records
+  eu_directives: 0 records
+
+Processing Session Statistics:
+  Documents processed: 1367
+  Documents cleaned: 1367
+  Extraction methods updated: 0
+  Errors encountered: 0
+
+Quality Scores:
+  Average badness: 0.0036
+  Best score: 0.0000
+  Worst score: 0.6606
+
+Language Analysis:
+  Average Greek content: 79.1%
+  Average English content: 4.4%
+
+Migration Notes:
+- All documents set to use 'docling' extraction method
+- All articles set to use 'markdownify' extraction method
+- All comments set to use 'markdownify' extraction method
+- Comments may need re-extraction if originally from docling
+- 5 external document tables created (nomoi, etc.)
+
+Recommended Next Steps:
+1. Run scraper to fetch new data: python scraper/main_scraper.py --update
+2. Review comments for potential re-extraction needs
+3. Populate external document tables as needed
+4. Test full pipeline functionality
+==================================================

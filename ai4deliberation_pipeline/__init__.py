@@ -36,13 +36,13 @@ __version__ = "1.0.0"
 __author__ = "AI4Deliberation Team"
 
 # Core API imports
-from .master.pipeline_orchestrator import run_pipeline, process_consultation
+# from .master.pipeline_orchestrator import run_pipeline, process_consultation # Commented out due to circular import issues
 from .config.config_manager import load_config, validate_config
 from .utils.database import get_database_stats
 
 __all__ = [
-    'run_pipeline',
-    'process_consultation', 
+    # 'run_pipeline',
+    # 'process_consultation', 
     'load_config',
     'validate_config',
     'get_database_stats'

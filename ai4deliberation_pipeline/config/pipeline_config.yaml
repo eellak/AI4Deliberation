@@ -3,7 +3,7 @@
 # Database Configuration
 database:
   # Default database path (can be overridden by command line)
-  default_path: "/mnt/data/AI4Deliberation/new_html_extraction/deliberation_data_gr_markdownify.db"
+  default_path: "deliberation_data_gr_MIGRATED_FRESH_20250602170747.db"
   # Backup directory for database migrations
   backup_dir: "/mnt/data/AI4Deliberation/backups"
   backup_prefix: "deliberation_data_gr_markdownify_backup"
@@ -55,6 +55,7 @@ html_processing:
 
 # PDF Processing Configuration
 pdf_processing:
+  docling_provider: "glossapi"
   # GlossAPI configuration
   glossapi:
     # Number of parallel processes
@@ -79,7 +80,7 @@ rust_cleaner:
   # Number of threads for Rust processing
   threads: 4
   # Script preferences (comma-separated)
-  scripts: "lat,grc"
+  scripts: "latin,greek,punctuation,numbers,common_symbols"
   # Batch size for file processing
   batch_size: 100
 

@@ -1,0 +1,7 @@
+sqlalchemy
+requests
+markdownify
+pandas
+docling
+PyYAML
+text-cleaner-rs # Build RUST module cleaning/nomoi/check_badness/extraction_metrics_rs

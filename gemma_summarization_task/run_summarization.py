@@ -6,6 +6,7 @@ from transformers import AutoProcessor, Gemma3ForConditionalGeneration
 import sqlite3
 import logging
 import os
+os.environ['TORCHDYNAMO_DISABLE'] = '1'
 
 # --- Contextual Formatter Definition ---
 class ContextualFormatter(logging.Formatter):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import os
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, create_engine
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, create_engine, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
 from datetime import datetime
@@ -50,25 +50,30 @@ class Consultation(Base):
         return f"<Consultation(post_id='{self.post_id}', title='{self.title[:50]}...')>"
 
 class Article(Base):
-    """Article model - parent of comments"""
+    """Article model with content and extraction metadata"""
     __tablename__ = 'articles'
     
     id = Column(Integer, primary_key=True)
-    post_id = Column(String(50), nullable=False)
     title = Column(String(500), nullable=False)
-    content = Column(Text)
-    content_cleaned = Column(Text)  # Cleaned/processed content
-    raw_html = Column(Text)  # Store unformatted HTML content
-    extraction_method = Column(String(100))  # Method used for content extraction/cleaning
     url = Column(String(255), nullable=False, unique=True)
-    consultation_id = Column(Integer, ForeignKey('consultations.id'))
-    
+    content = Column(Text, nullable=True)  # Markdownified content
+    raw_html = Column(Text, nullable=True) # Raw HTML content, can be large
+    # New fields for cleaned content and analysis
+    content_cleaned = Column(Text, nullable=True)
+    extraction_method = Column(String(100), nullable=True) # Method used for content extraction
+    badness_score = Column(Float, nullable=True)
+    greek_percentage = Column(Float, nullable=True)
+    english_percentage = Column(Float, nullable=True)
     # Relationships
+    consultation_id = Column(Integer, ForeignKey('consultations.id'), nullable=False, index=True)
     consultation = relationship("Consultation", back_populates="articles")
-    comments = relationship("Comment", back_populates="article")
+    comments = relationship("Comment", back_populates="article", cascade="all, delete-orphan")
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     def __repr__(self):
-        return f"<Article(post_id='{self.post_id}', title='{self.title[:50]}...')>"
+        return f"<Article(id={self.id}, title='{self.title[:50]}...', consultation_id={self.consultation_id})>"
 
 class Comment(Base):
     """Comment model"""
@@ -79,13 +84,14 @@ class Comment(Base):
     username = Column(String(255), nullable=False)
     date = Column(DateTime)
     content = Column(Text, nullable=False)
+    extraction_method = Column(String(100))  # Method used for content extraction
     article_id = Column(Integer, ForeignKey('articles.id'))
     
     # Relationships
     article = relationship("Article", back_populates="comments")
     
     def __repr__(self):
-        return f"<Comment(id={self.id}, author='{self.author}', date='{self.date}')>"
+        return f"<Comment(id={self.id}, username='{self.username}', date='{self.date}')>"
 
 class Document(Base):
     """Document model with content and extraction quality fields"""
@@ -94,21 +100,151 @@ class Document(Base):
     id = Column(Integer, primary_key=True)
     title = Column(String(255), nullable=False)
     url = Column(String(255), nullable=False, unique=True)
+    file_path = Column(String(512), nullable=True) # Path to the downloaded file
+    status = Column(String(50), nullable=True, default='pending', index=True) # e.g., pending, downloaded, processed, processing_failed, download_failed, processed_text_extraction_skipped
     type = Column(String(100))  # law_draft, analysis, deliberation_report, or other
-    content = Column(Text, nullable=True)  # Content of the downloaded and extracted PDF file
-    content_cleaned = Column(Text, nullable=True)  # Cleaned/processed content
-    extraction_method = Column(String(100))  # Method used for content extraction (e.g., 'rust_processor', 'pdf_processor')
-    badness_score = Column(String(50), nullable=True)  # Quality score from rust processor
-    greek_percentage = Column(String(50), nullable=True)  # Percentage of Greek content
-    english_percentage = Column(String(50), nullable=True)  # Percentage of English content
-    extraction_quality = Column(String(50), nullable=True)  # Legacy field - indicates extraction quality
+    content_type = Column(String(100), nullable=True) # MIME type of the document e.g. application/pdf
+    content = Column(Text, nullable=True) # Content from old DB (raw text if available, often from docling)
+    processed_text = Column(Text, nullable=True) # Text extracted by current pipeline (e.g. from PDF via GlossAPI/Docling)
+    extraction_method = Column(String(100), nullable=True) # Method used for processed_text extraction e.g. 'docling_glossapi', 'docling_tika'
+    content_cleaned = Column(Text, nullable=True) # Cleaned content by Rust processor
+    badness_score = Column(Float, nullable=True)   # Rust cleaner badness score (0-1)
+    
+    greek_percentage = Column(Float, nullable=True)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float, nullable=True)  # Percentage of English content (numeric)
+    
+    # extraction_quality = Column(String(50), nullable=True)  # Legacy field - can be removed if not used
+    
     consultation_id = Column(Integer, ForeignKey('consultations.id'))
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
     
     # Relationships
     consultation = relationship("Consultation", back_populates="documents")
     
     def __repr__(self):
         return f"<Document(title='{self.title}', type='{self.type}')>"
+
+# External Document Tables for Legal References
+
+class Nomos(Base):
+    """Greek laws (nomoi) model"""
+    __tablename__ = 'nomoi'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(255), nullable=False, unique=True)
+    type = Column(String(100))  # law type classification
+    content = Column(Text)  # Extracted content
+    content_cleaned = Column(Text)  # Cleaned/processed content
+    extraction_method = Column(String(100))  # Method used for content extraction
+    badness_score = Column(Float)  # Quality score from rust processor (numeric)
+    greek_percentage = Column(Float)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float)  # Percentage of English content (numeric)
+    publication_date = Column(DateTime)  # Official publication date
+    law_number = Column(String(100))  # Official law number
+    source = Column(String(100))  # Source (e.g., 'ΦΕΚ', 'et.gr')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<Nomos(title='{self.title[:50]}...', law_number='{self.law_number}')>"
+
+class YpourgikiApofasi(Base):
+    """Ministerial decisions (ypourgikes apofaseis) model"""
+    __tablename__ = 'ypourgikes_apofaseis'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(255), nullable=False, unique=True)
+    type = Column(String(100))  # decision type classification
+    content = Column(Text)  # Extracted content
+    content_cleaned = Column(Text)  # Cleaned/processed content
+    extraction_method = Column(String(100))  # Method used for content extraction
+    badness_score = Column(Float)  # Quality score from rust processor (numeric)
+    greek_percentage = Column(Float)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float)  # Percentage of English content (numeric)
+    publication_date = Column(DateTime)  # Official publication date
+    decision_number = Column(String(100))  # Official decision number
+    ministry = Column(String(255))  # Issuing ministry
+    source = Column(String(100))  # Source (e.g., 'ΦΕΚ', 'ministry website')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<YpourgikiApofasi(title='{self.title[:50]}...', decision_number='{self.decision_number}')>"
+
+class ProedrikiDiatagma(Base):
+    """Presidential decrees (proedrika diatagmata) model"""
+    __tablename__ = 'proedrika_diatagmata'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(255), nullable=False, unique=True)
+    type = Column(String(100))  # decree type classification
+    content = Column(Text)  # Extracted content
+    content_cleaned = Column(Text)  # Cleaned/processed content
+    extraction_method = Column(String(100))  # Method used for content extraction
+    badness_score = Column(Float)  # Quality score from rust processor (numeric)
+    greek_percentage = Column(Float)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float)  # Percentage of English content (numeric)
+    publication_date = Column(DateTime)  # Official publication date
+    decree_number = Column(String(100))  # Official decree number
+    source = Column(String(100))  # Source (e.g., 'ΦΕΚ', 'presidency.gr')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<ProedrikiDiatagma(title='{self.title[:50]}...', decree_number='{self.decree_number}')>"
+
+class EuRegulation(Base):
+    """EU regulations model"""
+    __tablename__ = 'eu_regulations'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(255), nullable=False, unique=True)
+    type = Column(String(100))  # regulation type classification
+    content = Column(Text)  # Extracted content
+    content_cleaned = Column(Text)  # Cleaned/processed content
+    extraction_method = Column(String(100))  # Method used for content extraction
+    badness_score = Column(Float)  # Quality score from rust processor (numeric)
+    greek_percentage = Column(Float)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float)  # Percentage of English content (numeric)
+    publication_date = Column(DateTime)  # Official publication date
+    regulation_number = Column(String(100))  # Official regulation number (e.g., '2024/903')
+    eu_year = Column(Integer)  # Year of regulation
+    source = Column(String(100))  # Source (e.g., 'EUR-Lex', 'eur-lex.europa.eu')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<EuRegulation(title='{self.title[:50]}...', regulation_number='{self.regulation_number}')>"
+
+class EuDirective(Base):
+    """EU directives model"""
+    __tablename__ = 'eu_directives'
+    
+    id = Column(Integer, primary_key=True)
+    title = Column(String(500), nullable=False)
+    url = Column(String(255), nullable=False, unique=True)
+    type = Column(String(100))  # directive type classification
+    content = Column(Text)  # Extracted content
+    content_cleaned = Column(Text)  # Cleaned/processed content
+    extraction_method = Column(String(100))  # Method used for content extraction
+    badness_score = Column(Float)  # Quality score from rust processor (numeric)
+    greek_percentage = Column(Float)  # Percentage of Greek content (numeric)
+    english_percentage = Column(Float)  # Percentage of English content (numeric)
+    publication_date = Column(DateTime)  # Official publication date
+    directive_number = Column(String(100))  # Official directive number (e.g., '2019/1024')
+    eu_year = Column(Integer)  # Year of directive
+    source = Column(String(100))  # Source (e.g., 'EUR-Lex', 'eur-lex.europa.eu')
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    
+    def __repr__(self):
+        return f"<EuDirective(title='{self.title[:50]}...', directive_number='{self.directive_number}')>"
 
 def init_db(db_url=None):
     """Initialize the database, creating all tables"""

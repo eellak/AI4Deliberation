@@ -11,8 +11,15 @@ import os
 import sys
 import time
 import logging
+import argparse
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
+import csv # For reading all_consultations.csv
+import subprocess # For running list_consultations.py
+from datetime import datetime
+from sqlalchemy import create_engine, event, text, or_, and_ # Added or_, and_
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.exc import SQLAlchemyError
 
 # Add paths for existing modules
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -30,7 +37,10 @@ from utils.database import create_database_connection
 
 # Import unified modules
 from scraper.scrape_single_consultation import scrape_and_store
-from scraper.db_models import init_db
+from scraper.db_models import init_db, Consultation, Article, Document
+
+# Import the discovery function
+# from scraper.list_consultations import get_all_consultations # No longer directly called, will run script
 
 # For now, we'll disable the discovery functionality to get the basic pipeline working
 # from ..scraper.scrape_to_db import discover_new_consultations
@@ -69,6 +79,7 @@ class PipelineOrchestrator:
         
         # Database path
         self.database_path = self.config['database']['default_path']
+        self.list_consultations_script_path = os.path.join(project_root, 'scraper', 'list_consultations.py')
         
         self.logger.info("Pipeline orchestrator initialized")
     
@@ -89,117 +100,107 @@ class PipelineOrchestrator:
         articles_processed = 0
         documents_processed = 0
         
+        engine, Session = init_db(f'sqlite:///{self.database_path}')
+        db_session = Session()
+
         try:
             self.logger.info(f"Starting pipeline processing for: {consultation_url}")
             
-            # Step 1: Scrape consultation data
-            self.logger.info("Step 1: Scraping consultation data...")
-            consultation_id = self._scrape_consultation(consultation_url)
+            consultation_id = self._scrape_consultation(consultation_url, db_session, is_new=False, selective_update=False)
             if consultation_id is None:
                 errors.append("Failed to scrape consultation data")
                 return PipelineResult(False, None, 0, 0, time.time() - start_time, errors)
             
             self.logger.info(f"Scraped consultation ID: {consultation_id}")
             
-            # Step 2: Process articles with integrated pipeline
-            self.logger.info("Step 2: Processing articles...")
-            articles_processed = self._process_consultation_articles(consultation_id, force_reprocess)
-            
-            # Step 3: Process documents with integrated pipeline  
-            self.logger.info("Step 3: Processing documents...")
-            documents_processed = self._process_consultation_documents(consultation_id, force_reprocess)
+            articles_processed = self._process_consultation_articles(consultation_id, force_reprocess=force_reprocess)
+            documents_processed = self._process_consultation_documents(consultation_id, force_reprocess=force_reprocess)
+            self._clean_consultation_content(consultation_id)
             
             processing_time = time.time() - start_time
             self.logger.info(f"Pipeline completed: {articles_processed} articles, {documents_processed} documents in {processing_time:.2f}s")
-            
-            return PipelineResult(
-                success=True,
-                consultation_id=consultation_id,
-                articles_processed=articles_processed,
-                documents_processed=documents_processed,
-                processing_time=processing_time,
-                errors=errors
-            )
+            db_session.commit()
+            return PipelineResult(True, consultation_id, articles_processed, documents_processed, processing_time, errors)
             
         except Exception as e:
-            self.logger.error(f"Pipeline processing failed: {e}")
+            self.logger.error(f"Pipeline processing failed for {consultation_url}: {e}")
             errors.append(str(e))
-            return PipelineResult(
-                success=False,
-                consultation_id=consultation_id,
-                articles_processed=articles_processed,
-                documents_processed=documents_processed,
-                processing_time=time.time() - start_time,
-                errors=errors
-            )
+            if db_session: db_session.rollback()
+            return PipelineResult(False, consultation_id, articles_processed, documents_processed, time.time() - start_time, errors)
+        finally:
+            if db_session: db_session.close()
     
-    def _scrape_consultation(self, url: str) -> Optional[int]:
+    def _scrape_consultation(self, url: str, session, is_new: bool = False, selective_update: bool = False) -> Optional[int]:
         """
         Scrape consultation data from URL.
+        If is_new is True, it skips the initial existence check and scrapes fully.
+        If selective_update is True, it attempts to update an existing record.
+        Otherwise (default), it checks existence and scrapes fully if not found.
         
         Args:
             url: URL to scrape
+            session: SQLAlchemy session
+            is_new: If True, assume consultation is new and scrape fully.
+            selective_update: If True, perform a selective update for an existing consultation.
             
         Returns:
             int: Consultation ID if successful, None otherwise
         """
         try:
-            self.logger.info("Step 1: Checking if consultation already exists...")
-            
-            # Initialize database connection for scraper
-            engine, Session = init_db(f'sqlite:///{self.database_path}')
-            session = Session()
-            
-            try:
-                # First check if consultation already exists
-                from scraper.db_models import Consultation
-                
-                # Normalize URLs for comparison
-                normalized_url = url.replace('http://', '').replace('https://', '')
-                
+            existing_consultation = None
+            if not is_new: # Only check existence if not flagged as definitely new or for selective update
+                self.logger.info(f"Checking if consultation for {url} already exists (is_new={is_new}, selective_update={selective_update})...")
+                # Use a more robust check, possibly involving post_id if scrape_and_store can provide it early
+                # For now, URL based check is kept from original logic
+                normalized_url_like = f'%{url.split("?")[0]}%' 
                 existing_consultation = session.query(Consultation).filter(
-                    Consultation.url.like(f'%{normalized_url.split("?")[0]}%')
+                    Consultation.url.like(normalized_url_like)
                 ).first()
-                
-                if existing_consultation:
-                    consultation_id = existing_consultation.id
-                    self.logger.info(f"Consultation already exists with ID: {consultation_id}")
-                    return consultation_id
-                
-                # If consultation doesn't exist, run scraper
-                self.logger.info("Consultation not found, running scraper...")
-                result = scrape_and_store(url, session)
-                
-                if result:
-                    self.logger.info("Scraping successful")
-                    
-                    # Find the consultation ID by URL
-                    consultation = session.query(Consultation).filter(
-                        Consultation.url.like(f'%{normalized_url.split("?")[0]}%')
-                    ).first()
-                    
-                    if consultation:
-                        consultation_id = consultation.id
-                        self.logger.info(f"New consultation created with ID: {consultation_id}")
-                        
-                        # Commit the session to ensure data is saved
-                        session.commit()
-                        return consultation_id
+
+            if existing_consultation and not selective_update and not is_new:
+                self.logger.info(f"Consultation already exists with ID: {existing_consultation.id} and not in selective_update/is_new mode. Skipping full scrape.")
+                return existing_consultation.id
+            
+            if selective_update and not existing_consultation:
+                self.logger.warning(f"Selective update requested for {url}, but no existing consultation found. Skipping selective update.")
+                return None
+
+            action = "selectively updating" if selective_update else "scraping brand new"
+            self.logger.info(f"Proceeding with {action} for: {url}")
+            
+            # scrape_and_store needs the existing_cons object for selective_update
+            scrape_success, scraped_data = scrape_and_store(url, session, 
+                                                            selective_update=selective_update, 
+                                                            existing_cons=existing_consultation if selective_update else None)
+            
+            if scrape_success:
+                # For selective_update, scraped_data is a dict. For full scrape, it's the ID.
+                if selective_update:
+                    # In selective_update mode, scrape_and_store might return True even if no DB changes occur (e.g. finished consultation)
+                    # We assume it handles its own commit/flush if changes are made.
+                    self.logger.info(f"Selective update call for {url} reported success. Changes: {scraped_data.get('changes')}")
+                    session.commit() # Ensure any changes from selective update are committed.
+                    return existing_consultation.id # Return the ID of the existing, updated consultation
+                else: # Full scrape (is_new=True or existing_consultation was None)
+                    scraped_consultation_id = scraped_data
+                    self.logger.info(f"Full scraping call successful. Returned ID: {scraped_consultation_id}")
+                    if scraped_consultation_id is not None:
+                        session.commit() # Ensure new consultation is committed.
+                        return scraped_consultation_id
                     else:
-                        self.logger.error("Could not find consultation in database after scraping")
+                        self.logger.error("Full scrape reported success but no ID returned. This should not happen.")
+                        session.rollback()
                         return None
-                        
-                else:
-                    self.logger.error("Scraping failed")
-                    return None
+            else:
+                self.logger.error(f"Scraping/update call failed for URL: {url} (selective_update={selective_update})")
+                session.rollback()
+                return None
                     
-            finally:
-                session.close()
-                
         except Exception as e:
-            self.logger.error(f"Error scraping consultation: {e}")
+            self.logger.error(f"Error in _scrape_consultation for {url}: {e}")
             import traceback
-            traceback.print_exc()
+            self.logger.error(traceback.format_exc())
+            if session: session.rollback()
             return None
     
     def _process_consultation_articles(self, consultation_id: int, force_reprocess: bool = False) -> int:
@@ -213,70 +214,52 @@ class PipelineOrchestrator:
         Returns:
             int: Number of articles processed
         """
+        self.logger.info(f"Processing articles for consultation ID: {consultation_id} (force_reprocess={force_reprocess})")
+        processed_count = 0
+        engine, Session = init_db(f'sqlite:///{self.database_path}') # Use local session for this self-contained part
+        session = Session()
         try:
-            with create_database_connection(self.database_path) as conn:
-                cursor = conn.cursor()
-                
-                # Get articles that need processing
-                if force_reprocess:
-                    query = "SELECT id, raw_html FROM articles WHERE consultation_id = ? AND raw_html IS NOT NULL"
-                else:
-                    # Process if raw_html exists AND (content_cleaned is NULL OR content is NULL)
-                    # This ensures we re-process if markdownification failed or if rust cleaning failed.
-                    query = """
-                        SELECT id, raw_html FROM articles 
-                        WHERE consultation_id = ? AND raw_html IS NOT NULL 
-                        AND (content_cleaned IS NULL OR content IS NULL)
-                    """
-                
-                cursor.execute(query, (consultation_id,))
-                articles = cursor.fetchall()
-                
-                if not articles:
-                    self.logger.info("No articles need processing")
-                    return 0
-                
-                self.logger.info(f"Processing {len(articles)} articles")
-                processed_count = 0
-                
-                for article_id, html_content in articles:
-                    try:
-                        if not html_content: # Skip if raw_html is somehow empty despite query
-                            self.logger.warning(f"Skipping article {article_id} due to empty raw_html_content.")
-                            continue
+            articles_query = session.query(Article).filter(Article.consultation_id == consultation_id)
+            if not force_reprocess:
+                # Only process if markdown (content) is missing. Cleaning is separate.
+                articles_query = articles_query.filter(Article.content == None)
+            
+            articles_to_process = articles_query.all()
 
-                        # Process through integrated pipeline (html_content is raw_html)
-                        result = self.content_processor.process_content_pipeline(html_content, "html")
-                        
-                        # Update database with results (single write)
-                        # articles.content gets markdownified HTML (result.original_content)
-                        # articles.content_cleaned gets Rust-cleaned markdown (result.cleaned_content)
-                        cursor.execute("""
-                            UPDATE articles 
-                            SET content = ?, content_cleaned = ?, extraction_method = ?
-                            WHERE id = ?
-                        """, (result.original_content, result.cleaned_content, result.extraction_method, article_id))
-                        
-                        processed_count += 1
-                        
-                        if processed_count % 10 == 0:
-                            conn.commit()
-                            self.logger.info(f"Processed {processed_count}/{len(articles)} articles")
-                    
-                    except Exception as e:
-                        self.logger.error(f"Error processing article {article_id}: {e}")
-                
-                conn.commit()
-                self.logger.info(f"Completed processing {processed_count} articles")
-                return processed_count
-                
+            if not articles_to_process:
+                self.logger.info(f"No articles require HTML to Markdown processing for consultation {consultation_id}.")
+                return 0
+            
+            self.logger.info(f"Found {len(articles_to_process)} articles for HTML to Markdown processing for consultation {consultation_id}.")
+            for article in articles_to_process:
+                if not article.raw_html:
+                    self.logger.warning(f"Article {article.id} has no raw_html. Skipping markdownification.")
+                    continue
+                try:
+                    processed_data: ProcessedContent = self.content_processor.process_content_pipeline(article.raw_html, content_type="html")
+                    article.content = processed_data.cleaned_content
+                    # The title is already set on the article from the scraping phase.
+                    # article.publication_date = processed_data.publication_date # Usually set by scraper
+                    # article.author = processed_data.author # Usually set by scraper
+                    article.updated_at = datetime.utcnow()
+                    processed_count += 1
+                    self.logger.debug(f"Markdownified article {article.id}.")
+                except Exception as e:
+                    self.logger.error(f"Error markdownifying article {article.id}: {e}", exc_info=True)
+            session.commit()
+            self.logger.info(f"HTML to Markdown processing complete for consultation {consultation_id}. Articles updated: {processed_count}")
+            return processed_count
         except Exception as e:
-            self.logger.error(f"Error processing consultation articles: {e}")
+            self.logger.error(f"Error in _process_consultation_articles for {consultation_id}: {e}", exc_info=True)
+            if session: session.rollback()
             return 0
+        finally:
+            if session: session.close()
     
     def _process_consultation_documents(self, consultation_id: int, force_reprocess: bool = False) -> int:
         """
         Process documents for a consultation with integrated pipeline.
+        Downloads, extracts text, and prepares for cleaning.
         
         Args:
             consultation_id: ID of consultation to process
@@ -285,92 +268,221 @@ class PipelineOrchestrator:
         Returns:
             int: Number of documents processed
         """
+        self.logger.info(f"Processing documents for consultation ID: {consultation_id} (force_reprocess={force_reprocess})")
+        processed_doc_count = 0
+        engine, Session = init_db(f'sqlite:///{self.database_path}') # Use local session
+        session = Session()
         try:
-            with create_database_connection(self.database_path) as conn:
-                cursor = conn.cursor()
+            docs_query = session.query(Document).filter(Document.consultation_id == consultation_id)
+            if not force_reprocess:
+                # Only process if status indicates pending download, or download/processing failed, or text not extracted
+                # OR if it was previously skipped but now might be processable (e.g. due to new URL pattern matching)
+                docs_query = docs_query.filter(
+                    or_(
+                        Document.status.in_(['pending', 'download_failed', 'processing_failed', 'processing_skipped']),
+                        and_(
+                            Document.status == 'downloaded',
+                            Document.processed_text == None
+                        )
+                    )
+                )
+            documents_to_process = docs_query.all()
+
+            if not documents_to_process:
+                self.logger.info(f"No documents require download/text extraction for consultation {consultation_id}.")
+                return 0
+
+            self.logger.info(f"Found {len(documents_to_process)} documents for download/text extraction for consultation {consultation_id}.")
+
+            for doc in documents_to_process:
+                self.logger.info(f"Processing document {doc.id} (URL: {doc.url})...")
+                downloaded_path = None
+                extracted_text = None
+                doc_updated = False
+
+                try:
+                    # TODO: Add more robust content type detection here (e.g., HEAD request for Content-Type)
+                    is_pdf_url = doc.url and doc.url.lower().endswith('.pdf')
+                    is_download_monitor_url = doc.url and 'download.php?id=' in doc.url.lower()
+
+                    if is_pdf_url or is_download_monitor_url:
+                        self.logger.info(f"Attempting to process document {doc.id} as PDF (URL: {doc.url})")
+                        extracted_text = self.content_processor.process_pdf_content(doc.url)
+                        
+                        # process_pdf_content in ContentProcessor is expected to return:
+                        # - Extracted text (str, possibly empty if PDF had no text or extraction was poor)
+                        # - Empty string (\"\") if download failed or if the downloaded file was not a processable PDF by GlossAPI
+                        # - It should not return None unless a very unexpected error occurs before download/extraction attempt.
+
+                        if extracted_text is not None and extracted_text != "": # Successfully extracted some text
+                            doc.processed_text = extracted_text
+                            # Try to get actual content type from processor if it stored it
+                            doc.content_type = getattr(self.content_processor, 'last_downloaded_content_type', 'application/pdf')
+                            doc.extraction_method = self.content_processor.config.get('pdf_processing', {}).get('docling_provider', 'docling_glossapi')
+                            doc.status = 'processed'
+                            self.logger.info(f"Successfully processed document {doc.id}, extracted {len(extracted_text)} chars. Content-Type: {doc.content_type}")
+                        elif extracted_text == "": # Download or extraction failed, but was handled by process_pdf_content
+                            doc.status = 'processing_failed'
+                            # Try to get actual content type from processor if it stored it
+                            doc.content_type = getattr(self.content_processor, 'last_downloaded_content_type', 'unknown')
+                            self.logger.warning(f"Processing document {doc.id} resulted in empty text. Download or extraction likely failed or file was not a PDF. Status set to 'processing_failed'. Content-Type: {doc.content_type}")
+                        else: # extracted_text is None - indicates a more severe issue
+                            doc.status = 'processing_failed'
+                            doc.content_type = getattr(self.content_processor, 'last_downloaded_content_type', 'unknown')
+                            self.logger.error(f"Document {doc.id} processing failed critically (extracted_text is None). Content-Type: {doc.content_type}")
+                    else:
+                        self.logger.warning(f"Skipping document {doc.id}: URL does not appear to be a direct PDF or a known download link ({doc.url})")
+                        doc.status = 'processing_skipped'
+
+                    doc.updated_at = datetime.utcnow()
+                    session.add(doc) # Add to session for SQLAlchemy to track changes
+                    doc_updated = True
+                    processed_doc_count +=1
+
+                except Exception as e_doc:
+                    self.logger.error(f"Error processing document {doc.id}: {e_doc}", exc_info=True)
+                    if doc: # Ensure doc object exists
+                        doc.status = 'processing_failed'
+                        doc.updated_at = datetime.utcnow()
+                        session.add(doc)
+                        doc_updated = True # Mark as updated to attempt commit
+                    if session: session.rollback() # Rollback this specific doc's transaction part if possible
+                    # Continue to next document if one fails
                 
-                # Get documents that need processing (exclude law_draft type)
-                if force_reprocess:
-                    query = """
-                        SELECT id, type, url, content FROM documents 
-                        WHERE consultation_id = ? AND type != 'law_draft'
-                    """
-                else:
-                    query = """
-                        SELECT id, type, url, content FROM documents 
-                        WHERE consultation_id = ? AND type != 'law_draft'
-                        AND content_cleaned IS NULL
-                    """
-                
-                cursor.execute(query, (consultation_id,))
-                documents = cursor.fetchall()
-                
-                if not documents:
-                    self.logger.info("No documents need processing")
-                    return 0
-                
-                self.logger.info(f"Processing {len(documents)} documents")
-                processed_count = 0
-                
-                for doc_id, doc_type, doc_url, existing_content in documents:
+                # Commit after each document to save progress, or handle as a batch
+                if doc_updated:
                     try:
-                        content = None
-                        content_type = "text"
-                        
-                        # Determine how to get content
-                        if existing_content and existing_content.strip():
-                            # Use existing content if available
-                            content = existing_content
-                            content_type = "text"
-                            self.logger.info(f"Processing document {doc_id} with existing content")
-                        elif doc_url and doc_url.strip():
-                            # Download and extract PDF content
-                            content = doc_url  # For PDF processing, pass the URL
-                            content_type = "pdf"
-                            self.logger.info(f"Processing document {doc_id} by downloading PDF from {doc_url}")
-                        else:
-                            self.logger.warning(f"Document {doc_id} has no content or URL to process")
-                            continue
-                        
-                        if content:
-                            # Process through integrated pipeline (download → extract → clean)
-                            result = self.content_processor.process_content_pipeline(content, content_type)
-                            
-                            # Check if we got meaningful results
-                            if result.cleaned_content or result.original_content:
-                                # Update database with results (single write)
-                                cursor.execute("""
-                                    UPDATE documents 
-                                    SET content = ?, content_cleaned = ?, badness_score = ?, 
-                                        greek_percentage = ?, english_percentage = ?,
-                                        extraction_method = ?
-                                    WHERE id = ?
-                                """, (
-                                    result.original_content, result.cleaned_content, result.badness_score,
-                                    result.greek_percentage, result.english_percentage,
-                                    result.extraction_method, doc_id
-                                ))
-                                
-                                processed_count += 1
-                                self.logger.info(f"Successfully processed document {doc_id}")
-                            else:
-                                self.logger.warning(f"Document {doc_id} processing produced no content")
-                            
-                            if processed_count % 5 == 0:
-                                conn.commit()
-                                self.logger.info(f"Processed {processed_count}/{len(documents)} documents")
-                    
-                    except Exception as e:
-                        self.logger.error(f"Error processing document {doc_id}: {e}")
-                
-                conn.commit()
-                self.logger.info(f"Completed processing {processed_count} documents")
-                return processed_count
-                
-        except Exception as e:
-            self.logger.error(f"Error processing consultation documents: {e}")
+                        session.commit()
+                    except SQLAlchemyError as e_commit:
+                        self.logger.error(f"Failed to commit changes for document {doc.id}: {e_commit}")
+                        session.rollback()
+
+            self.logger.info(f"Document download/text extraction stage complete for consultation {consultation_id}. Documents handled: {processed_doc_count}")
+            return processed_doc_count
+        
+        except SQLAlchemyError as e:
+            self.logger.error(f"Database error during document processing for consultation {consultation_id}: {e}")
+            if session: session.rollback()
+            return 0 # Indicate failure or no documents processed
+        except Exception as e_main:
+            self.logger.error(f"Unexpected error in _process_consultation_documents for consultation {consultation_id}: {e_main}", exc_info=True)
+            if session: session.rollback()
             return 0
-    
+        finally:
+            if session: session.close()
+
+    def _clean_consultation_content(self, consultation_id: int):
+        """
+        Clean textual content (articles, processed documents) for a consultation 
+        using the Rust-based text cleaner.
+        
+        Args:
+            consultation_id: ID of the consultation whose content needs cleaning.
+        """
+        self.logger.info(f"Starting text cleaning for consultation ID: {consultation_id}")
+        items_cleaned_count = 0
+        
+        if not hasattr(self.content_processor, 'rust_text_cleaner') or self.content_processor.rust_text_cleaner is None:
+            self.logger.error("Rust text cleaner is not available in ContentProcessor. Skipping cleaning.")
+            return
+
+        engine, Session = init_db(f'sqlite:///{self.database_path}') # Use local session
+        session = Session()
+
+        try:
+            rust_version_date = self.config.get('rust_cleaner_version_date', '1970-01-01')
+
+            # 1. Clean Articles
+            self.logger.debug(f"Fetching articles for consultation {consultation_id} to clean.")
+            article_query_sql = text(f"""
+                SELECT id, content
+                FROM articles
+                WHERE consultation_id = :cid 
+                AND content IS NOT NULL AND content != ''
+                AND (content_cleaned IS NULL OR content_cleaned = '')
+            """)
+            articles_to_clean = session.execute(article_query_sql, {'cid': consultation_id}).fetchall()
+            self.logger.info(f"Found {len(articles_to_clean)} articles to clean for consultation {consultation_id}.")
+
+            for article_id, raw_text_content in articles_to_clean:
+                if not raw_text_content: # Should be caught by query, but double check
+                    continue
+                try:
+                    cleaned_text, badness_score, greek_percentage, english_percentage = \
+                        self.content_processor.clean_text_for_pipeline(
+                            raw_text_content,
+                            item_type="article",
+                            item_id=article_id,
+                            consultation_id=consultation_id
+                        )
+
+                    update_sql = text(f"""
+                        UPDATE articles 
+                        SET content_cleaned = :cc, badness_score = :bs, 
+                            greek_percentage = :gp, english_percentage = :ep, 
+                            updated_at = :ua
+                        WHERE id = :id
+                    """)
+                    session.execute(update_sql, {
+                        'cc': cleaned_text, 'bs': badness_score, 
+                        'gp': greek_percentage, 'ep': english_percentage, 
+                        'ua': datetime.utcnow(), 'id': article_id
+                    })
+                    items_cleaned_count += 1
+                    self.logger.debug(f"Cleaned article {article_id}. Score: {badness_score:.3f}")
+                except Exception as e:
+                    self.logger.error(f"Error cleaning article {article_id}: {e}", exc_info=True)
+                    # Optionally, mark as error or skip
+
+            # 2. Clean Processed Document Texts
+            self.logger.debug(f"Fetching processed document texts for consultation {consultation_id} to clean.")
+            document_query_sql = text(f"""
+                SELECT id, processed_text 
+                FROM documents
+                WHERE consultation_id = :cid 
+                AND processed_text IS NOT NULL AND processed_text != ''
+                AND (content_cleaned IS NULL OR content_cleaned = '')
+            """)
+            documents_to_clean = session.execute(document_query_sql, {'cid': consultation_id}).fetchall()
+            self.logger.info(f"Found {len(documents_to_clean)} document texts to clean for consultation {consultation_id}.")
+
+            for doc_id, raw_processed_text in documents_to_clean:
+                if not raw_processed_text: # Should be caught by query
+                    continue
+                try:
+                    cleaned_text, badness_score, greek_percentage, english_percentage = \
+                        self.content_processor.clean_text_for_pipeline(
+                            raw_processed_text,
+                            item_type="document",
+                            item_id=doc_id,
+                            consultation_id=consultation_id
+                        )
+
+                    update_sql = text(f"""
+                        UPDATE documents
+                        SET content_cleaned = :cc, badness_score = :bs, 
+                            greek_percentage = :gp, english_percentage = :ep, 
+                            updated_at = :ua
+                        WHERE id = :id
+                    """)
+                    session.execute(update_sql, {
+                        'cc': cleaned_text, 'bs': badness_score, 
+                        'gp': greek_percentage, 'ep': english_percentage, 
+                        'ua': datetime.utcnow(), 'id': doc_id
+                    })
+                    items_cleaned_count += 1
+                    self.logger.debug(f"Cleaned document text {doc_id}. Score: {badness_score:.3f}")
+                except Exception as e:
+                    self.logger.error(f"Error cleaning document text {doc_id}: {e}", exc_info=True)
+            
+            session.commit()
+            self.logger.info(f"Content cleaning completed for consultation {consultation_id}. Total items (re)cleaned: {items_cleaned_count}.")
+
+        except Exception as e:
+            self.logger.error(f"Database error during content cleaning for consultation {consultation_id}: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+
     def discover_and_process_new_consultations(self) -> List[PipelineResult]:
         """
         Discover new consultations and process them through the pipeline.
@@ -378,70 +490,182 @@ class PipelineOrchestrator:
         Returns:
             list: List of PipelineResult for each processed consultation
         """
+        results: List[PipelineResult] = []
+        self.logger.info("Discovering new consultations...")
+
+        # Step 1: Run scraper/list_consultations.py --update
         try:
-            self.logger.info("Discovering new consultations...")
-            
-            # TODO: Implement discovery functionality
-            # For now, return empty list
-            self.logger.info("Discovery functionality not yet integrated - returning empty list")
-            return []
-            
-        except Exception as e:
-            self.logger.error(f"Error discovering new consultations: {e}")
-            return []
+            self.logger.info(f"Running {self.list_consultations_script_path} --update to refresh all_consultations.csv")
+            process = subprocess.run(
+                [sys.executable, self.list_consultations_script_path, "--update"],
+                capture_output=True, text=True, check=False, encoding='utf-8' # Added encoding
+            )
+            if process.returncode != 0:
+                self.logger.error(f"list_consultations.py script failed. STDERR: {process.stderr} STDOUT: {process.stdout}")
+            else:
+                self.logger.info(f"list_consultations.py output:\n{process.stdout}")
+        except Exception as e_subproc:
+             self.logger.error(f"Failed to run list_consultations.py: {e_subproc}", exc_info=True)
+             return results # Cannot proceed if discovery script fails
 
-
-def run_pipeline(mode: str = "single", url: Optional[str] = None, config: Optional[Dict[str, Any]] = None) -> PipelineResult:
-    """
-    Run the AI4Deliberation pipeline.
-    
-    Args:
-        mode: Pipeline mode ('single', 'update', 'discover')
-        url: Consultation URL (required for 'single' mode)
-        config: Optional configuration dictionary
+        # Step 2: Read all_consultations.csv
+        all_site_consultations_data = []
+        csv_path = os.path.join(project_root, 'all_consultations.csv')
+        if not os.path.exists(csv_path):
+            self.logger.error(f"all_consultations.csv not found at {csv_path}. Cannot proceed.")
+            return results
         
-    Returns:
-        PipelineResult: Processing results
-    """
-    orchestrator = PipelineOrchestrator(config)
-    
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile:
+            reader = csv.DictReader(csvfile)
+            for row in reader:
+                all_site_consultations_data.append(row)
+        
+        if not all_site_consultations_data:
+            self.logger.info("No consultations found in all_consultations.csv. Checking for unfinished in DB.")
+        else:
+            self.logger.info(f"Found {len(all_site_consultations_data)} total consultations from opengov.gr listing.")
+
+        engine, Session = init_db(f'sqlite:///{self.database_path}')
+        db_session = Session()
+        try:
+            # Step 3: Get existing consultation URLs from DB for comparison
+            # Use full URLs for more precise checking
+            existing_consultation_urls = {res[0] for res in db_session.query(Consultation.url).all()}
+            self.logger.info(f"Found {len(existing_consultation_urls)} unique consultation URLs in the database for exact matching.")
+
+            # Step 4: Identify and process truly new consultations
+            new_consultations_processed_count = 0
+            for csv_entry in all_site_consultations_data:
+                url_from_csv = csv_entry['url']
+                # No normalization here, compare the full URL
+                # normalized_url_from_csv = url_from_csv.split('?')[0] # Old logic
+
+                if url_from_csv not in existing_consultation_urls:
+                    self.logger.info(f"New consultation identified by full URL: {url_from_csv} (Title: {csv_entry.get('title', 'N/A')}). Processing...")
+                    start_time_single = time.time()
+                    try:
+                        # For new consultations, we pass is_new=True
+                        # The _scrape_consultation method will use the db_session
+                        new_consult_id = self._scrape_consultation(url_from_csv, db_session, is_new=True)
+                        
+                        if new_consult_id:
+                            db_session.flush() # Ensure ID is available if new
+                            self.logger.info(f"Successfully scraped new consultation {url_from_csv}, assigned/found ID: {new_consult_id}")
+                            articles_p = self._process_consultation_articles(new_consult_id, force_reprocess=True)
+                            docs_p = self._process_consultation_documents(new_consult_id, force_reprocess=True)
+                            self._clean_consultation_content(new_consult_id)
+                            db_session.commit() # Commit all changes for this new consultation
+                            results.append(PipelineResult(True, new_consult_id, articles_p, docs_p, time.time() - start_time_single, []))
+                            existing_consultation_urls.add(url_from_csv) # Add the full URL to the set of processed ones
+                            new_consultations_processed_count += 1
+                        else:
+                            db_session.rollback() # Rollback if scraping failed for the new item
+                            self.logger.error(f"Failed to scrape new consultation: {url_from_csv}")
+                            results.append(PipelineResult(False, None, 0, 0, time.time() - start_time_single, [f"Failed to scrape new: {url_from_csv}"]))
+                    except Exception as e_new_proc:
+                        db_session.rollback()
+                        self.logger.error(f"Major error processing new consultation {url_from_csv}: {e_new_proc}", exc_info=True)
+                        results.append(PipelineResult(False, None, 0, 0, time.time() - start_time_single, [f"Major error processing new: {url_from_csv}, {e_new_proc}"]))
+            self.logger.info(f"Finished processing new consultations. Processed and added: {new_consultations_processed_count}")
+
+            # Step 5: Identify and update unfinished consultations from DB
+            self.logger.info("Identifying and selectively updating unfinished consultations from DB...")
+            unfinished_consultations = db_session.query(Consultation).filter(Consultation.is_finished == False).all()
+            unfinished_updated_count = 0
+
+            if not unfinished_consultations:
+                self.logger.info("No unfinished consultations found in the database to update.")
+            else:
+                self.logger.info(f"Found {len(unfinished_consultations)} unfinished consultations to check for updates.")
+                for consult_to_update in unfinished_consultations:
+                    self.logger.info(f"Checking for updates for unfinished ID: {consult_to_update.id}, URL: {consult_to_update.url}")
+                    start_time_single = time.time()
+                    try:
+                        # Selective update will handle metadata, new comments, and is_finished status
+                        # It uses the same db_session
+                        updated_id = self._scrape_consultation(consult_to_update.url, db_session, selective_update=True)
+                        
+                        if updated_id: # Indicates selective scrape ran
+                            # Potentially new comments/articles were added by scrape_and_store.
+                            # We need to process their HTML to Markdown and then clean them.
+                            self.logger.info(f"Selective update for {consult_to_update.url} (ID: {updated_id}) ran. Processing potential new content...")
+                            articles_p = self._process_consultation_articles(updated_id, force_reprocess=False) # Process only if content is missing
+                            # For documents, selective_update usually doesn't add new ones, but if it did, this would catch them.
+                            docs_p = self._process_consultation_documents(updated_id, force_reprocess=False)
+                            # Re-clean all content for this consultation in case badness scores or other things changed,
+                            # or if new articles/comments were added and need cleaning.
+                            self._clean_consultation_content(updated_id)
+                            db_session.commit() # Commit changes from selective update and subsequent processing
+                            unfinished_updated_count += 1
+                            results.append(PipelineResult(True, updated_id, articles_p, docs_p, time.time() - start_time_single, []))
+                        else:
+                            # _scrape_consultation with selective_update might return None if it logs an issue or finds no existing.
+                            # No rollback needed here as _scrape_consultation handles its own or doesn't make changes if it returns None.
+                            self.logger.info(f"Selective update for {consult_to_update.url} (ID: {consult_to_update.id}) did not proceed or made no direct DB ID change.")
+                            # Still append a result to show it was checked
+                            results.append(PipelineResult(True, consult_to_update.id, 0,0, time.time()-start_time_single, ["Selective update ran but no new ID returned/no changes requiring ID confirmation."]))
+
+                    except Exception as e_unfinished_proc:
+                        db_session.rollback()
+                        self.logger.error(f"Major error during selective update for {consult_to_update.url}: {e_unfinished_proc}", exc_info=True)
+                        results.append(PipelineResult(False, consult_to_update.id, 0,0, time.time()-start_time_single, [f"Major error processing unfinished: {consult_to_update.url}, {e_unfinished_proc}"]))
+                self.logger.info(f"Finished checking/updating unfinished consultations. Handled: {len(unfinished_consultations)}")
+        except Exception as e_outer_discovery:
+            self.logger.error(f"Outer error during discovery and processing: {e_outer_discovery}", exc_info=True)
+            if db_session: db_session.rollback() # Rollback any partial changes if loop fails
+            results.append(PipelineResult(False, None, 0, 0, 0, [str(e_outer_discovery)]))
+        finally:
+            if db_session: db_session.close()
+        
+        self.logger.info("Consultation discovery and update process finished.")
+        return results
+
+# Wrapper functions for main execution block
+def run_pipeline_entry(mode: str = "single", url: Optional[str] = None, config_dict: Optional[Dict[str, Any]] = None, force_reprocess: bool = False):
+    orchestrator = PipelineOrchestrator(config_dict)
     if mode == "single":
         if not url:
             raise ValueError("URL required for single consultation mode")
-        return orchestrator.process_consultation(url)
-    
+        return orchestrator.process_consultation(url, force_reprocess=force_reprocess)
     elif mode == "update":
-        results = orchestrator.discover_and_process_new_consultations()
-        # Return combined result
-        total_articles = sum(r.articles_processed for r in results)
-        total_documents = sum(r.documents_processed for r in results)
-        total_time = sum(r.processing_time for r in results)
-        all_errors = []
-        for r in results:
-            all_errors.extend(r.errors)
-        
-        return PipelineResult(
-            success=len(results) > 0 and all(r.success for r in results),
-            consultation_id=None,
-            articles_processed=total_articles,
-            documents_processed=total_documents,
-            processing_time=total_time,
-            errors=all_errors
-        )
-    
+        return orchestrator.discover_and_process_new_consultations() # This returns a list
     else:
         raise ValueError(f"Unknown pipeline mode: {mode}")
 
-
-def process_consultation(consultation_url: str, config: Optional[Dict[str, Any]] = None) -> PipelineResult:
-    """
-    Process a single consultation through the complete pipeline.
+def main():
+    parser = argparse.ArgumentParser(description="AI4Deliberation Pipeline Orchestrator")
+    parser.add_argument("--mode", type=str, default="update", choices=["single", "update"],
+                        help="Pipeline mode: 'single' for one URL, 'update' for discovery and update.")
+    parser.add_argument("--url", type=str, help="URL to process (for single mode)")
+    parser.add_argument("--force-reprocess", action="store_true", help="Force reprocessing of all content for the given URL/consultation.")
     
-    Args:
-        consultation_url: URL of consultation to process
-        config: Optional configuration dictionary
-        
-    Returns:
-        PipelineResult: Processing results
-    """
-    return run_pipeline(mode="single", url=consultation_url, config=config) 
+    args = parser.parse_args()
+    cfg = load_config() 
+    logger = setup_logging(cfg, "orchestrator_main_script") 
+
+    logger.info(f"Running orchestrator in mode: {args.mode}")
+    if args.mode == 'single' and args.url:
+        logger.info(f"Processing single URL: {args.url}")
+    
+    try:
+        if args.mode == "update":
+            list_of_results = run_pipeline_entry(mode=args.mode, config_dict=cfg) # Expecting a list
+            logger.info("Update mode finished.")
+            print(f"Update mode processing results: {len(list_of_results)} operations attempted.")
+            for res_idx, res_item in enumerate(list_of_results):
+                print(f"Result {res_idx + 1}: {res_item}")
+            sys.exit(0) # Assume 0 for update mode unless catastrophic failure in run_pipeline_entry
+        else: # single mode
+            pipeline_result_obj = run_pipeline_entry(mode=args.mode, url=args.url, config_dict=cfg, force_reprocess=args.force_reprocess)
+            print(f"Single mode processing result: {pipeline_result_obj}")
+            sys.exit(0 if pipeline_result_obj.success else 1)
+
+    except ValueError as ve:
+        logger.error(f"Configuration or argument error: {ve}", exc_info=True)
+        sys.exit(2)
+    except Exception as e:
+        logger.error(f"An unexpected error occurred in the orchestrator main script: {e}", exc_info=True)
+        sys.exit(3) 
+
+if __name__ == "__main__":
+    main() 
