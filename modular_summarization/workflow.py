@@ -1,0 +1,232 @@
+"""<100-line orchestrator for modular summarizer.
+
+Usage::
+    from modular_summarization.workflow import run_workflow
+    result = run_workflow(consultation_id=123, dry_run=True)
+"""
+from __future__ import annotations
+
+import json
+from typing import List, Dict, Any, Optional
+import logging
+
+from .logger_setup import init_logging
+from .db_io import fetch_articles
+from .advanced_parser import get_article_chunks
+from .hierarchy_parser import BillHierarchy
+from .compression import length_metrics, desired_tokens
+from .prompts import get_prompt
+from .retry import generate_with_retry
+
+logger = logging.getLogger(__name__)
+
+# initialise root logger on module import (could be moved to CLI entry)
+init_logging()
+
+__all__ = ["run_workflow"]
+
+
+# dummy generator FN placeholder --------------------------------------------------
+
+def _fake_llm_generate(prompt: str, max_tokens: int) -> str:  # noqa: D401
+    """TEMP stand-in until LLM module integrated."""
+    return f"<LLM output len≤{max_tokens} tokens for prompt: {prompt[:60]}…>"
+
+
+# -------------------------------------------------------------------------------
+# PUBLIC ENTRY
+# -------------------------------------------------------------------------------
+
+def run_workflow(
+    consultation_id: int,
+    *,
+    article_id: Optional[int] = None,
+    dry_run: bool = False,
+    db_path: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run summarization pipeline; returns structured result dict.
+
+    Parameters
+    ----------
+    consultation_id : int
+        Target consultation in the SQLite DB.
+    article_id : int | None, optional
+        Restrict to single article.
+    dry_run : bool, optional
+        If True, skip LLM calls and return Markdown hierarchy.
+    db_path : str | None, optional
+        SQLite path (overrides `config.DB_PATH`).
+    """
+    logger.info("Starting workflow: consultation_id=%s article_id=%s dry=%s", consultation_id, article_id, dry_run)
+    rows = fetch_articles(consultation_id, article_id=article_id, db_path=db_path or None)
+    # 1. parse per-row chunks
+    all_chunks: List[Dict[str, Any]] = []
+    for r in rows:
+        for ch in get_article_chunks(r["content"], r["title"]):
+            ch["db_id"] = r["id"]
+            all_chunks.append(ch)
+    logger.info("Parsed %d chunks", len(all_chunks))
+
+    # fast dry-run path ------------------------------------------------------
+    if dry_run:
+        # Build mapping of article id -> parsed chunks for text presentation
+        chunk_map = {}
+        for ch in all_chunks:
+            chunk_map.setdefault(ch["db_id"], []).append(ch)
+
+        # hierarchy build via section_parser titles + article content merge
+        try:
+            import section_parser.section_parser as sp
+            title_rows = sp.parse_titles(db_path or config.DB_PATH, consultation_id)
+            id_to_content = {r["id"]: r for r in rows}
+            for tr in title_rows:
+                art = id_to_content.get(tr["id"])
+                tr["content"] = art["content"] if art else ""
+            hierarchy = BillHierarchy.from_db_rows(title_rows)
+        except Exception as e:
+            logger.warning("section_parser parse failed: %s – falling back", e)
+            hier_rows = [
+                {"id": c["db_id"], "title": c["title_line"], "content": c["content"]}
+                for c in all_chunks
+            ]
+            hierarchy = BillHierarchy.from_db_rows(hier_rows)
+
+        # continuity checks -------------------------------------------------
+        issues: List[str] = []
+        try:
+            cont_problems = sp.verify_continuity(title_rows)  # type: ignore[name-defined]
+            issues.extend(cont_problems)
+        except Exception as e:
+            logger.warning("continuity verify failed: %s", e)
+
+        # article id continuity (simple ascending + gaps)
+        article_ids = []
+        for p in hierarchy.parts:
+            for ch in p.chapters:
+                article_ids.extend(a.id for a in ch.articles)
+            if hasattr(p, "misc_articles"):
+                article_ids.extend(a.id for a in p.misc_articles)  # type: ignore[attr-defined]
+        article_ids_sorted = sorted(article_ids)
+        for prev, nxt in zip(article_ids_sorted, article_ids_sorted[1:]):
+            if nxt <= prev:
+                issues.append(f"Article id {nxt} not greater than {prev}")
+        # detect missing ids
+        if article_ids_sorted:
+            full_range = set(range(article_ids_sorted[0], article_ids_sorted[-1] + 1))
+            missing = sorted(full_range - set(article_ids_sorted))
+            if missing:
+                issues.append(f"Missing article ids: {missing[:10]}{'…' if len(missing) > 10 else ''}")
+
+        # parsed sub-article number continuity
+        parsed_nums = sorted({ch["article_number"] for lst in chunk_map.values() for ch in lst if ch.get("article_number")})
+        for prev, nxt in zip(parsed_nums, parsed_nums[1:]):
+            if nxt != prev + 1:
+                issues.append(f"Sub-article number jump: {prev} -> {nxt}")
+
+        presentation_md = _build_dry_run_markdown(hierarchy)
+        presentation_txt = _build_dry_run_text(hierarchy, chunk_map)
+        return {"dry_run_markdown": presentation_md, "dry_run_text": presentation_txt, "continuity_issues": issues}
+
+    # Stage 1 ---------------------------------------------------------------
+    stage1_results: List[str] = []
+    for ch in all_chunks:
+        tok, words, _ = length_metrics(ch["content"])
+        if words < 80:
+            stage1_results.append(ch["content"])
+            continue
+        target_tokens = desired_tokens(tok)
+        prompt = get_prompt("stage1_article").format(
+            input_tokens=tok, input_words=words, target_tokens=target_tokens
+        ) + "\n" + ch["content"]
+        res = generate_with_retry(_fake_llm_generate, prompt, target_tokens)
+        stage1_results.append(res.text)
+
+    # TODO: pipeline Stage 2 & 3 (placeholder)
+    return {"stage1": stage1_results}
+
+
+# -------------------------------------------------------------------------------
+# helpers
+# -------------------------------------------------------------------------------
+
+def _build_dry_run_markdown(hierarchy: BillHierarchy) -> str:
+    lines: List[str] = ["# Dry-Run Hierarchy View"]
+    handled_ids = set()
+    for p in hierarchy.parts:
+        lines.append(f"\n## Μέρος {p.name}")
+        # misc articles directly under part
+        misc = getattr(p, "misc_articles", [])
+        for art in misc:
+            tok, words, _ = length_metrics(art.text)
+            lines.append(f"* **Άρθρο {art.id}** – {words} words / ~{tok} tokens (no chapter)")
+            handled_ids.add(art.id)
+        for ch in p.chapters:
+            lines.append(f"\n### Κεφάλαιο {ch.name}")
+            for art in ch.articles:
+                tok, words, _ = length_metrics(art.text)
+                lines.append(f"* **Άρθρο {art.id}** – {words} words / ~{tok} tokens")
+                handled_ids.add(art.id)
+
+    # Uncategorised articles
+    uncategorised = [
+        art for part in hierarchy.parts for ch in part.chapters for art in ch.articles if art.id not in handled_ids
+    ]
+    if uncategorised:
+        lines.append("\n## (Χωρίς Μέρος/Κεφάλαιο)")
+        for art in uncategorised:
+            tok, words, _ = length_metrics(art.text)
+            lines.append(f"* **Άρθρο {art.id}** – {words} words / ~{tok} tokens")
+    return "\n".join(lines)
+
+
+def _build_dry_run_text(hierarchy: BillHierarchy, chunk_map) -> str:
+    """Plain-text hierarchy view with indentation."""
+    lines: List[str] = []
+    handled_ids = set()
+    for p in hierarchy.parts:
+        lines.append(f"ΜΕΡΟΣ {p.name}")
+        # Chapterless articles first
+        misc = getattr(p, "misc_articles", [])
+        for art in misc:
+            _append_article(lines, art, chunk_map, indent=2)
+            handled_ids.add(art.id)
+        for ch in p.chapters:
+            lines.append(f"  ΚΕΦΑΛΑΙΟ {ch.name}")
+            for art in ch.articles:
+                _append_article(lines, art, chunk_map, indent=4)
+                handled_ids.add(art.id)
+
+    # uncategorised
+    uncategorised = [
+        art for part in hierarchy.parts for ch in part.chapters for art in ch.articles if art.id not in handled_ids
+    ]
+    if uncategorised:
+        lines.append("ΜΕΡΟΣ (Χωρίς) ")
+        for art in uncategorised:
+            _append_article(lines, art, chunk_map, indent=2)
+    return "\n".join(lines)
+
+
+def _append_article(lines: List[str], art, chunk_map, *, indent: int):
+    tok, words, _ = length_metrics(art.text)
+    prefix = " " * indent
+    lines.append(f"{prefix}ΑΡΘΡΟ {art.id} – {words} words / ~{tok} tokens")
+    lines.append(f"{prefix}  Τίτλος: {art.title.strip()}")
+    # Full content indented 4 spaces deeper
+    content_prefix = prefix + "    "
+    content_lines = art.text.strip().splitlines() or [""]
+    for idx, cl in enumerate(content_lines):
+        # insert single-dash separator before headers of sub-articles inside content
+        if idx > 0 and cl.strip().lower().startswith("άρθρο"):
+            lines.append(f"{content_prefix}{'-'*40}")
+        lines.append(f"{content_prefix}{cl}")
+    # list parsed sub-article sections
+    chunks = chunk_map.get(art.id, [])
+    for idx, ch in enumerate(chunks):
+        if idx > 0:  # separator between parsed chunks of same article
+            lines.append(f"{content_prefix}{'-'*40}")
+        tline = ch["title_line"].strip()
+        c_words = len(ch["content"].split())
+        lines.append(f"{content_prefix}• {tline} – {c_words} words")
+    # double line separator after each article for readability
+    lines.append(f"{prefix}{'='*80}")
