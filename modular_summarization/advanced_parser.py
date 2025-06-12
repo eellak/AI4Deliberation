@@ -17,7 +17,16 @@ __all__ = [
 ]
 
 
-_ARTICLE_REGEX = re.compile(r"^\s*Ά?ρθρο\s+(\d+)", re.IGNORECASE | re.MULTILINE)
+# Matches lines like:
+#   Άρθρο 1
+#   ### Άρθρο 2
+#   **Άρθρο 3**
+#   ### **Άρθρο 4**
+# Optional leading markdown heading symbols (e.g. ###) or bold markers (one to three '*').
+_ARTICLE_REGEX = re.compile(
+    r"^\s*(?:#+\s*)?(?:\*{1,3}\s*)?Ά?ρθρο\s+(\d+)",
+    re.IGNORECASE | re.MULTILINE,
+)
 
 
 def _extract_header_numbers(text: str) -> List[int]:
