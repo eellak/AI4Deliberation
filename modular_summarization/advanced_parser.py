@@ -23,10 +23,14 @@ __all__ = [
 #   **Άρθρο 3**
 #   ### **Άρθρο 4**
 # Optional leading markdown heading symbols (e.g. ###) or bold markers (one to three '*').
+# Match article headers at line start (for content)
 _ARTICLE_REGEX = re.compile(
-    r"^\s*(?:#+\s*)?(?:\*{1,3}\s*)?Ά?ρθρο\s+(\d+)",
+    r"^\s*(?:#+\s*)?(?:\*{1,3}\s*)?(?:Άρθρο|ΑΡΘΡΟ|ΆΡΘΡΟ|άρθρο|article)\s+(\d+)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+# Separate lightweight pattern for grabbing number anywhere inside a single line (DB title)
+_INLINE_ARTICLE_RE = re.compile(r"(?:Άρθρο|ΑΡΘΡΟ|ΆΡΘΡΟ|άρθρο|article)\s+(\d+)", re.IGNORECASE)
 
 
 def _extract_header_numbers(text: str) -> List[int]:
@@ -58,7 +62,15 @@ def get_article_chunks(db_content: str, db_title: str) -> List[Dict[str, Any]]:
 
     header_iter = list(_ARTICLE_REGEX.finditer(db_content))
     if not header_iter:
-        return [{"title_line": db_title, "content": db_content, "source_db_title": db_title}]
+        # Try extract number from DB title line
+        m = _INLINE_ARTICLE_RE.search(db_title)
+        art_num = int(m.group(1)) if m else None
+        return [{
+            "title_line": db_title.strip(),
+            "content": db_content.strip(),
+            "source_db_title": db_title,
+            "article_number": art_num,
+        }]
 
     chunks: List[Dict[str, Any]] = []
     for i, match in enumerate(header_iter):

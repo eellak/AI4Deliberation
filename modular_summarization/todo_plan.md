@@ -2,15 +2,16 @@
 
 ## Goals
 1. **Neat workflow script (<100 LOC)** that orchestrates the pipeline by importing well-scoped modules.
-2. **Remove Stage 2.4–2.6** heavy re-join logic; we will adopt a new adaptive chunking/compression strategy.
-3. **Separate modules**:
+2. **Compression budgeting helper**: a reusable `summarization_budget()` that converts original length → `{target_words}/{target_sentences}/{token_limit}` and feeds prompts & retry logic (10 % words, /20 sentences, 2.5 tokens × 1.1 overshoot).
+3. **Remove Stage 2.4–2.6** heavy re-join logic; we will adopt a new adaptive chunking/compression strategy.
+4. **Separate modules**:
    - `config.py` – global constants (token limits, compression ratio, etc.).
    - `prompts.py` – prompt templates + small retry helper.
    - `advanced_parser.py` – streamlined article/section parsing utilities.
-4. **Integrate `section_parser` assets** into a future `hierarchy_parser` module supporting the Greek legal hierarchy:
+5. **Integrate `section_parser` assets** into a future `hierarchy_parser` module supporting the Greek legal hierarchy:
    - **Μέρος (Part) → Κατηγορία (Category) → Άρθρο (Article)**.
    - Each level will generate summaries, rolling up (Article → Category → Part → Whole).
-5. **Consistent compression**: maintain ≈30 % ratio; no summarization if original text <80 words.
+6. **Consistent compression**: maintain ≈30 % ratio; no summarization if original text <80 words.
 
 ---
 
@@ -27,9 +28,9 @@
 - Create `workflow.py` (target <100 LOC). **Important**: keep core logic slim by delegating heavy lifting to helper modules.
   1. Load articles from DB (via `db_io.py`).
   2. Use `advanced_parser.get_article_chunks()` for each DB entry **(full gap-filling & quote-aware detection must be preserved – see Task 8)**.
-  3. For each Article chunk (>80 words) generate a **Stage 1** summary; if ≤80 words, reuse original text.
-  4. Group Stage 1 summaries **per Κατηγορία** and run **Stage 2** summarizer with a prompt that explains: «Το νομοσχέδιο δομείται σε Μέρη → Κατηγορίες → Άρθρα· τα ακόλουθα είναι περιλήψεις άρθρων της Κατηγορίας {X}».
-  5. Aggregate Category summaries **per Μέρος** and run **Stage 3** summarizer to produce a cohesive Part-level overview.
+  3. For each Article chunk (>80 words) generate a **Stage 1** summary using `summarization_budget()` to set `{target_*}` variables; if ≤80 words, reuse original text.
+  4. Group Stage 1 summaries **per Κατηγορία** and run **Stage 2** summarizer with a prompt that explains the hierarchy and uses **dynamic budgets** from aggregated length.
+  5. Aggregate Category summaries **per Μέρος** and run **Stage 3** summarizer with budgets.
   6. (Future) Optionally combine Part summaries into an overall bill summary.
   7. Return structured result dict / write JSON.
   8. Expose `run_workflow()` that receives `consultation_id` and optional `article_id`.
@@ -38,11 +39,11 @@
 - [x] `hierarchy_parser.py` created wrapping `section_parser` and exposing Part/Category/Article dataclasses.
 - Cooperates with `advanced_parser` for gap-filled articles.
 
-### 4 – Dynamic prompt length injection (NEXT)
-- Extend `compression.py` (or new `metrics.py`) with `length_metrics(text)` returning `(tokens, words, sentences)`.
-- Add placeholders `{input_tokens}`, `{input_words}`, `{target_sentences}` in prompt templates.
-- Runner computes metrics per stage and `str.format` fills the prompt before generation.
-- Update adaptive compression logic to compute `target_sentences` from `desired_tokens()`.
+### 4 – Dynamic prompt & token budgeting (IN PROGRESS)
+- Implemented `compression.summarization_budget()` returning `target_words`, `target_sentences`, `token_limit`.
+- Prompt templates now include placeholders `{target_words}`, `{target_sentences}`, `{token_limit}` and are formatted at runtime.
+- `retry.generate_with_retry()` accepts `token_limit` to shrink on continuation.
+- **Next**: propagate budgeting to Stage 2/3, add unit tests.
 
 ### 5 – Hierarchical dry-run presentation (NEXT)
 - When `--dry-run` flag is set:
@@ -62,12 +63,17 @@
   4. Verifies that each Article block includes word/token counts.
 - Add CLI `scripts/generate_dry_runs.py` for regenerating all hierarchy files in bulk.
 
-### 6 – Adaptive compression & token budgeting (FUTURE)
-- New helper `compression.py`:
-  - `desired_tokens(input_tokens, stage) -> int` with **dynamic ratio** (e.g., 25 % for large inputs, 40 % for small) so that a 3 000-word Category summary compresses more than a 1 000-word one.
-  - Logic to **skip** summarization if `< MIN_WORDS_FOR_SUMMARY`.
-  - Helper `should_split(input_tokens, stage)` comparing against model window.
-- Update prompts to accept `{TARGET_TOKENS}` placeholder and formula-driven budget.
+### 6 – Model loading & inference helpers (NEW)
+- Add `llm.py` (or extend `workflow.py`) to load Gemma-3B/7B with:
+  ```python
+  os.environ["TORCHDYNAMO_DISABLE"] = "1"
+  model = Gemma3ForConditionalGeneration.from_pretrained(…, device_map="auto", torch_dtype=torch.bfloat16, attn_implementation="sdpa").eval()
+  processor = AutoProcessor.from_pretrained(model_id)
+  ```
+- Ensure graceful fallback when HF download fails (log & raise).
+- Expose `generate(text, max_tokens)` wrapping processor → model → decode.
+- Share across workflow & tests.
+- Align CLI flags for `--model-id`, `--dtype`, etc.
 
 ### 7 – Prompt library refactor (FUTURE)
 - `prompts.py` must include **all** templates:

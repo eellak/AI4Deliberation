@@ -15,9 +15,10 @@ from .logger_setup import init_logging
 from .db_io import fetch_articles
 from .advanced_parser import get_article_chunks
 from .hierarchy_parser import BillHierarchy
-from .compression import length_metrics, desired_tokens
+from .compression import summarization_budget, length_metrics
 from .prompts import get_prompt
 from .retry import generate_with_retry
+from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
 
 logger = logging.getLogger(__name__)
 
@@ -157,21 +158,59 @@ def run_workflow(
         return {"dry_run_markdown": presentation_md, "dry_run_text": presentation_txt, "continuity_issues": issues}
 
     # Stage 1 ---------------------------------------------------------------
+    CLASSIFIER_TOKEN_LIMIT = 384
     stage1_results: List[str] = []
+    law_mod_results: List[Dict[str, Any]] = []
+    law_new_results: List[Dict[str, Any]] = []
     for ch in all_chunks:
         tok, words, _ = length_metrics(ch["content"])
+        # Stage1 summarization kept for future use (unchanged logic)
         if words < 80:
             stage1_results.append(ch["content"])
-            continue
-        target_tokens = desired_tokens(tok)
-        prompt = get_prompt("stage1_article").format(
-            input_tokens=tok, input_words=words, target_tokens=target_tokens
-        ) + "\n" + ch["content"]
-        res = generate_with_retry(_fake_llm_generate, prompt, target_tokens)
-        stage1_results.append(res.text)
+        else:
+            budget = summarization_budget(ch["content"], compression_ratio=0.10)
+            prompt = get_prompt("stage1_article").format(**budget) + "\n" + ch["content"]
+            res = generate_with_retry(_fake_llm_generate, prompt, budget["token_limit"])
+            stage1_results.append(res.text)
+
+        # First/second article special-case detection (currently dummy)
+        if ch.get("article_number") == 1 and is_skopos_article(ch["content"]):
+            pass  # future handling
+        elif ch.get("article_number") == 2 and is_antikeimeno_article(ch["content"]):
+            pass  # future handling
+
+        # Binary classifier path
+        if article_modifies_law(ch["content"]):
+            mod_prompt = get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
+            mod_res = generate_with_retry(_fake_llm_generate, mod_prompt, CLASSIFIER_TOKEN_LIMIT)
+
+            parsed = parse_law_mod_json(mod_res.text)
+            law_mod_results.append({
+                "article_id": ch.get("db_id"),
+                "article_number": ch.get("article_number"),
+                "llm_output": mod_res.text,
+                "parsed": parsed,
+                "retries": mod_res.retries,
+            })
+        else:
+            # New provisions JSON extraction
+            new_prompt = get_prompt("law_new_json") + "\n" + ch["content"]
+            new_res = generate_with_retry(_fake_llm_generate, new_prompt, CLASSIFIER_TOKEN_LIMIT)
+            parsed_new = parse_law_new_json(new_res.text)
+            law_new_results.append({
+                "article_id": ch.get("db_id"),
+                "article_number": ch.get("article_number"),
+                "llm_output": new_res.text,
+                "parsed": parsed_new,
+                "retries": new_res.retries,
+            })
 
     # TODO: pipeline Stage 2 & 3 (placeholder)
-    return {"stage1": stage1_results}
+    return {
+        "stage1": stage1_results,
+        "law_modifications": law_mod_results,
+        "law_new_provisions": law_new_results,
+    }
 
 
 # -------------------------------------------------------------------------------
