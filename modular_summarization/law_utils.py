@@ -185,8 +185,43 @@ def article_modifies_law(text: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# JSON parsing helper
+# JSON parsing helpers
 # ---------------------------------------------------------------------------
+
+_FENCE_RE = re.compile(r"^```(?:json)?\s*(.*?)\s*```$", re.DOTALL)
+
+
+def _extract_json_candidate(raw: str) -> str:
+    """Return probable JSON substring inside *raw* by finding outermost braces.
+
+    Steps:
+    1. Remove Markdown fences if the entire block is fenced (handled separately).
+    2. Locate first "{" and last "}".  If both exist and are ordered, return that slice.
+       Otherwise return the original string unchanged.
+    3. Trim leading/trailing whitespace and zero-width chars.
+    """
+    cleaned = raw.strip().lstrip("\ufeff\u200b")  # strip BOM / ZWSP
+
+    # Fast-path: if string already starts with { and ends with }
+    if cleaned.startswith("{") and cleaned.rstrip().endswith("}"):
+        return cleaned
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return cleaned[start : end + 1].strip()
+    return cleaned
+
+
+def _strip_code_fence(raw: str) -> str:
+    """Return content inside ```json fences if present, else unchanged."""
+    txt = raw.strip()
+    m = _FENCE_RE.match(txt)
+    if m:
+        txt = m.group(1).strip()
+    # Fallback: attempt to extract substring between braces
+    return _extract_json_candidate(txt)
+
 
 def parse_law_mod_json(raw: str) -> Optional[Dict[str, str]]:
     """Attempt to load JSON returned by the LLM prompt.
@@ -194,31 +229,30 @@ def parse_law_mod_json(raw: str) -> Optional[Dict[str, str]]:
     Handles common wrapping such as Markdown code fences or triple backticks.
     Returns dict if valid and contains required keys, else ``None``.
     """
-    # strip fences and whitespace
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        # remove first and last fence lines
-        parts = cleaned.split("```", 2)
-        if len(parts) >= 3:
-            cleaned = parts[1].strip()
+    cleaned = _strip_code_fence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
         return None
 
-    # Accept both legacy and new schema (with key_themes list)
-    required_basic = {"law_reference", "article_number", "change_type", "major_change_summary"}
-    required_extended = required_basic | {"key_themes"}
+    allowed_keys = {"law_reference", "article_number", "change_type", "major_change_summary", "key_themes"}
+    required = {"law_reference", "article_number", "change_type", "major_change_summary"}
 
-    if required_basic.issubset(data.keys()):
-        # If extended keys exist validate type
-        if "key_themes" in data:
-            if not isinstance(data["key_themes"], list):
-                return None
-            # normalise list to str items
-            data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]  # keep max 3
-        return {k: data.get(k) for k in (required_basic | {"key_themes"}) if k in data}
-    return None
+    # Reject unknown keys early
+    if set(data.keys()) - allowed_keys:
+        return None
+
+    if not required.issubset(data.keys()):
+        return None
+
+    # Validate key_themes type if present
+    if "key_themes" in data and not isinstance(data["key_themes"], list):
+        return None
+
+    data.setdefault("key_themes", [])
+    data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]
+
+    return {k: data.get(k) for k in allowed_keys if k in data}
 
 
 def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
@@ -226,23 +260,27 @@ def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
 
     Expected keys: article_title, provision_type, core_provision_summary, key_themes (list).
     """
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        parts = cleaned.split("```", 2)
-        if len(parts) >= 3:
-            cleaned = parts[1].strip()
+    cleaned = _strip_code_fence(raw)
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
         return None
 
-    required = {"article_title", "provision_type", "core_provision_summary", "key_themes"}
+    allowed = {"article_title", "provision_type", "core_provision_summary", "key_themes"}
+    required = allowed
+
+    # unknown keys -> invalid
+    if set(data.keys()) - allowed:
+        return None
+
     if not required.issubset(data.keys()):
         return None
+
     if not isinstance(data["key_themes"], list):
         return None
+
     data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]
-    return {k: data[k] for k in required}
+    return {k: data[k] for k in allowed}
 
 
 # ---------------------------------------------------------------------------

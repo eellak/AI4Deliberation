@@ -7,7 +7,7 @@ Usage::
 from __future__ import annotations
 
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import logging
 import re
 
@@ -19,6 +19,7 @@ from .compression import summarization_budget, length_metrics
 from .prompts import get_prompt
 from .retry import generate_with_retry
 from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
+from modular_summarization.llm import get_generator
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +34,7 @@ try:
 except ImportError:  # pragma: no cover
     _apu = None  # type: ignore
 
-# dummy generator FN placeholder --------------------------------------------------
-
-def _fake_llm_generate(prompt: str, max_tokens: int) -> str:  # noqa: D401
-    """TEMP stand-in until LLM module integrated."""
-    return f"<LLM output len≤{max_tokens} tokens for prompt: {prompt[:60]}…>"
-
+# no more dummy generator; rely on llm.get_generator for stub or real
 
 # -------------------------------------------------------------------------------
 # PUBLIC ENTRY
@@ -50,6 +46,7 @@ def run_workflow(
     article_id: Optional[int] = None,
     dry_run: bool = False,
     db_path: Optional[str] = None,
+    generator_fn: Optional[Callable[[str, int], str]] = None,
 ) -> Dict[str, Any]:
     """Run summarization pipeline; returns structured result dict.
 
@@ -63,6 +60,8 @@ def run_workflow(
         If True, skip LLM calls and return Markdown hierarchy.
     db_path : str | None, optional
         SQLite path (overrides `config.DB_PATH`).
+    generator_fn : Callable[[str, int], str] | None, optional
+        Optional generator function to use for LLM calls.
     """
     logger.info("Starting workflow: consultation_id=%s article_id=%s dry=%s", consultation_id, article_id, dry_run)
     rows = fetch_articles(consultation_id, article_id=article_id, db_path=db_path or None)
@@ -158,10 +157,12 @@ def run_workflow(
         return {"dry_run_markdown": presentation_md, "dry_run_text": presentation_txt, "continuity_issues": issues}
 
     # Stage 1 ---------------------------------------------------------------
-    CLASSIFIER_TOKEN_LIMIT = 384
+    # Token budget for law-mod/new-provision JSON extraction
+    CLASSIFIER_TOKEN_LIMIT = 512
     stage1_results: List[str] = []
     law_mod_results: List[Dict[str, Any]] = []
     law_new_results: List[Dict[str, Any]] = []
+    _gen_fn = generator_fn or get_generator(dry_run=dry_run)
     for ch in all_chunks:
         tok, words, _ = length_metrics(ch["content"])
         # Stage1 summarization kept for future use (unchanged logic)
@@ -170,7 +171,7 @@ def run_workflow(
         else:
             budget = summarization_budget(ch["content"], compression_ratio=0.10)
             prompt = get_prompt("stage1_article").format(**budget) + "\n" + ch["content"]
-            res = generate_with_retry(_fake_llm_generate, prompt, budget["token_limit"])
+            res = generate_with_retry(_gen_fn, prompt, budget["token_limit"], max_retries=1)
             stage1_results.append(res.text)
 
         # First/second article special-case detection (currently dummy)
@@ -181,8 +182,8 @@ def run_workflow(
 
         # Binary classifier path
         if article_modifies_law(ch["content"]):
-            mod_prompt = get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
-            mod_res = generate_with_retry(_fake_llm_generate, mod_prompt, CLASSIFIER_TOKEN_LIMIT)
+            mod_prompt = "[SCHEMA:LAW_MOD]\n" + get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
+            mod_res = generate_with_retry(_gen_fn, mod_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
 
             parsed = parse_law_mod_json(mod_res.text)
             law_mod_results.append({
@@ -190,18 +191,20 @@ def run_workflow(
                 "article_number": ch.get("article_number"),
                 "llm_output": mod_res.text,
                 "parsed": parsed,
+                "prompt": mod_prompt,
                 "retries": mod_res.retries,
             })
         else:
             # New provisions JSON extraction
-            new_prompt = get_prompt("law_new_json") + "\n" + ch["content"]
-            new_res = generate_with_retry(_fake_llm_generate, new_prompt, CLASSIFIER_TOKEN_LIMIT)
+            new_prompt = "[SCHEMA:LAW_NEW]\n" + get_prompt("law_new_json") + "\n" + ch["content"]
+            new_res = generate_with_retry(_gen_fn, new_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
             parsed_new = parse_law_new_json(new_res.text)
             law_new_results.append({
                 "article_id": ch.get("db_id"),
                 "article_number": ch.get("article_number"),
                 "llm_output": new_res.text,
                 "parsed": parsed_new,
+                "prompt": new_prompt,
                 "retries": new_res.retries,
             })
 
