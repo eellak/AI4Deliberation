@@ -14,7 +14,7 @@ LAW_MOD_SCHEMA = {
                 "διαγράφεται",
             ],
         },
-        "major_change_summary": {"type": "string", "maxLength": 300},
+        "major_change_summary": {"type": "string", "maxLength": 550},
         "key_themes": {
             "type": "array",
             "items": {
@@ -50,7 +50,7 @@ LAW_NEW_SCHEMA = {
                 "διάρθρωση",
             ],
         },
-        "core_provision_summary": {"type": "string", "maxLength": 300},
+        "core_provision_summary": {"type": "string", "maxLength": 550},
         "key_themes": {
             "type": "array",
             "items": {

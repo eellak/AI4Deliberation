@@ -24,8 +24,9 @@
 - [x] `__init__.py` placeholder.
 - [x] This `todo_plan.md`.
 
-### 2 – Write the lightweight orchestrator (NEXT)
-- Create `workflow.py` (target <100 LOC). **Important**: keep core logic slim by delegating heavy lifting to helper modules.
+### 2 – Write the lightweight orchestrator (IN PROGRESS)
+- [ ] Refactor to keep main body <100 LOC by extracting helper functions.
+- [x] Created initial `workflow.py` (currently ~140 LOC; refactor later for brevity). Core logic delegates parsing and summarisation to helper modules.
   1. Load articles from DB (via `db_io.py`).
   2. Use `advanced_parser.get_article_chunks()` for each DB entry **(full gap-filling & quote-aware detection must be preserved – see Task 8)**.
   3. For each Article chunk (>80 words) generate a **Stage 1** summary using `summarization_budget()` to set `{target_*}` variables; if ≤80 words, reuse original text.
@@ -90,7 +91,17 @@
   - **Hierarchy gap fix**: For any Μέρος that has *null* Κεφάλαια in its DB titles, *before* article parsing scan the article **contents** for `ΚΕΦΑΛΑΙΟ` headers (e.g. `### ΚΕΦΑΛΑΙΟ Β΄`).  Detect these and inject synthetic Chapter nodes into the hierarchy, then proceed with normal article header parsing.
   - Add regression tests with complex fixtures to guarantee identical chunk outputs.
 
-### 9 – Tests & CI (FUTURE)
+### 9 – Introductory article detection & exclusion (NEW)
+- [ ] Implement accent-insensitive exact-word detectors `is_skopos`, `is_antikeimeno` in `law_utils.py`.
+- [ ] In `workflow.py` capture first two logical articles per Μέρος, classify, store in `context["intro_articles"]` and exclude from summarisation loops.
+- [ ] Ensure these raw texts are returned in `workflow` output for later surface.
+- [ ] Unit tests for detection accuracy and exclusion behaviour.
+
+### 10 – Hierarchical summarisation aggregation (NEW)
+- [ ] Generate article-level summaries (Stage 1), then aggregate to ΚΕΦΑΛΑΙΟ (Stage 2) and to Μέρος (Stage 3) using dynamic budgets.
+- [ ] Return `chapter_summaries` and `part_summaries` in workflow output.
+
+### 11 – Tests & CI (FUTURE)
 - PyTest suite covering parser, hierarchy aggregation, compression maths, prompt integrity & orchestrator E2E dry-run.
 - Github Actions (or similar) for lint & unit tests.
 

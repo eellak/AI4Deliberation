@@ -287,18 +287,28 @@ def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
 # Scope & Objective detectors (Σκοπός / Αντικείμενο)
 # ---------------------------------------------------------------------------
 
-_RE_SKOPOS = re.compile(r"\bΣκοπός\b", re.IGNORECASE)
-_RE_ANTIKEIMENO = re.compile(r"\bΑντικείμενο\b", re.IGNORECASE)
+import unicodedata
+
+# Accent-insensitive exact-word regex helpers
+_DEF_WORD_BOUND = r"(?:\s|[«»“”\"'\-.,;:!?()\[\]{}]|^|$)"
+
+def _strip_accents(txt: str) -> str:
+    """Return *txt* lower-cased and without diacritics (Greek accent marks)."""
+    nfkd = unicodedata.normalize("NFD", txt.lower())
+    return "".join(ch for ch in nfkd if unicodedata.category(ch) != "Mn")
+
+_RE_SKOPOS = re.compile(_DEF_WORD_BOUND + r"σκοπος" + _DEF_WORD_BOUND)
+_RE_ANTIKEIMENO = re.compile(_DEF_WORD_BOUND + r"αντικειμενο" + _DEF_WORD_BOUND)
 
 
 def contains_skopos(text: str) -> bool:  # noqa: D401
-    """Return True if *text* contains the word «Σκοπός» (case-insensitive)."""
-    return bool(_RE_SKOPOS.search(text))
+    """Return True if *text* contains the full word «Σκοπός» (accent/case-insensitive)."""
+    return bool(_RE_SKOPOS.search(_strip_accents(text)))
 
 
 def contains_antikeimeno(text: str) -> bool:  # noqa: D401
-    """Return True if *text* contains the word «Αντικείμενο» (case-insensitive)."""
-    return bool(_RE_ANTIKEIMENO.search(text))
+    """Return True if *text* contains the full word «Αντικείμενο» (accent/case-insensitive)."""
+    return bool(_RE_ANTIKEIMENO.search(_strip_accents(text)))
 
 
 def detect_scope_and_objective(article1_text: str, article2_text: str) -> dict[str, bool]:
@@ -309,11 +319,37 @@ def detect_scope_and_objective(article1_text: str, article2_text: str) -> dict[s
     }
 
 
-def is_skopos_article(text: str) -> bool:  # noqa: D401
-    """Dummy detector – always returns False. To be implemented."""
-    return False
+def _first_two_nonempty_lines(text: str) -> str:
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    return "\n".join(lines[:2])
 
 
-def is_antikeimeno_article(text: str) -> bool:  # noqa: D401
-    """Dummy detector – always returns False. To be implemented."""
-    return False
+def is_skopos_article(chunk: dict | str) -> bool:  # noqa: D401
+    """Return True when *chunk* appears to be a Σκοπός (Purpose) article.
+
+    Accepts either a *chunk* dict produced by ``advanced_parser.get_article_chunks``
+    or a plain string (title+content).  Detection rule:
+    – Search *exact* word «Σκοπός» (accent-insensitive) in the title line *or*
+      within the first two non-empty content lines.
+    """
+    if isinstance(chunk, dict):
+        title = chunk.get("title_line", "")
+        body_excerpt = _first_two_nonempty_lines(chunk.get("content", ""))
+        target = title + "\n" + body_excerpt
+    else:
+        target = _first_two_nonempty_lines(str(chunk))
+    return contains_skopos(target)
+
+
+def is_antikeimeno_article(chunk: dict | str) -> bool:  # noqa: D401
+    """Return True when *chunk* appears to be an Αντικείμενο (Object) article.
+
+    Same logic as :pyfunc:`is_skopos_article` but for the word «Αντικείμενο».
+    """
+    if isinstance(chunk, dict):
+        title = chunk.get("title_line", "")
+        body_excerpt = _first_two_nonempty_lines(chunk.get("content", ""))
+        target = title + "\n" + body_excerpt
+    else:
+        target = _first_two_nonempty_lines(str(chunk))
+    return contains_antikeimeno(target)

@@ -1,1 +1,5 @@
-"""Modular summarization package initialization file."""
+"""Modular summarization package."""
+
+from . import trace
+
+__all__ = ["trace"]

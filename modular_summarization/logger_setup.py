@@ -12,10 +12,14 @@ _DEF_LEVEL = logging.INFO
 def init_logging(level=_DEF_LEVEL):
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter(LOG_FORMAT, DATEFMT))
+    handler.setLevel(level)
+    
     root = logging.getLogger()
     root.setLevel(level)
     root.addHandler(handler)
+    
     # also file handler
     file_handler = logging.FileHandler(f"summarization_{RUN_TIMESTAMP}.log", encoding="utf-8")
     file_handler.setFormatter(logging.Formatter(LOG_FORMAT, DATEFMT))
+    file_handler.setLevel(level)
     root.addHandler(file_handler)

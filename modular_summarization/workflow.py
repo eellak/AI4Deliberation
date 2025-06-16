@@ -20,6 +20,8 @@ from .prompts import get_prompt
 from .retry import generate_with_retry
 from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
 from modular_summarization.llm import get_generator
+from .trace import ReasoningTracer, TraceEntry
+from . import config as cfg
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +49,8 @@ def run_workflow(
     dry_run: bool = False,
     db_path: Optional[str] = None,
     generator_fn: Optional[Callable[[str, int], str]] = None,
+    enable_trace: Optional[bool] = None,
+    trace_output_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run summarization pipeline; returns structured result dict.
 
@@ -62,8 +66,23 @@ def run_workflow(
         SQLite path (overrides `config.DB_PATH`).
     generator_fn : Callable[[str, int], str] | None, optional
         Optional generator function to use for LLM calls.
+    enable_trace : bool | None, optional
+        Enable reasoning trace logging. If None, uses config.ENABLE_REASONING_TRACE.
+    trace_output_dir : str | None, optional
+        Directory for trace files. If None, uses config.TRACE_OUTPUT_DIR.
     """
-    logger.info("Starting workflow: consultation_id=%s article_id=%s dry=%s", consultation_id, article_id, dry_run)
+    # Determine trace settings
+    should_trace = enable_trace if enable_trace is not None else cfg.ENABLE_REASONING_TRACE
+    
+    logger.info("Starting workflow: consultation_id=%s article_id=%s dry=%s trace=%s", 
+                consultation_id, article_id, dry_run, should_trace)
+    
+    # Initialize tracer if enabled and not in dry-run
+    tracer = None
+    if should_trace and not dry_run:
+        tracer = ReasoningTracer(consultation_id, trace_output_dir)
+        logger.info("Reasoning trace enabled: %s", tracer.trace_file_path)
+
     rows = fetch_articles(consultation_id, article_id=article_id, db_path=db_path or None)
     # 1. parse per-row chunks
     all_chunks: List[Dict[str, Any]] = []
@@ -162,8 +181,19 @@ def run_workflow(
     stage1_results: List[str] = []
     law_mod_results: List[Dict[str, Any]] = []
     law_new_results: List[Dict[str, Any]] = []
+    intro_articles: List[Dict[str, Any]] = []  # store Σκοπός/Αντικείμενο raw chunks
+
     _gen_fn = generator_fn or get_generator(dry_run=dry_run)
+
     for ch in all_chunks:
+        # Detect and store introductory Σκοπός / Αντικείμενο articles ----------------
+        if ch.get("article_number") == 1 and is_skopos_article(ch):
+            intro_articles.append({"type": "skopos", **ch})
+            continue  # skip summarisation for this chunk
+        if ch.get("article_number") == 2 and is_antikeimeno_article(ch):
+            intro_articles.append({"type": "antikeimeno", **ch})
+            continue  # skip summarisation for this chunk
+
         tok, words, _ = length_metrics(ch["content"])
         # Stage1 summarization kept for future use (unchanged logic)
         if words < 80:
@@ -174,18 +204,25 @@ def run_workflow(
             res = generate_with_retry(_gen_fn, prompt, budget["token_limit"], max_retries=1)
             stage1_results.append(res.text)
 
-        # First/second article special-case detection (currently dummy)
-        if ch.get("article_number") == 1 and is_skopos_article(ch["content"]):
-            pass  # future handling
-        elif ch.get("article_number") == 2 and is_antikeimeno_article(ch["content"]):
-            pass  # future handling
-
         # Binary classifier path
         if article_modifies_law(ch["content"]):
             mod_prompt = "[SCHEMA:LAW_MOD]\n" + get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
             mod_res = generate_with_retry(_gen_fn, mod_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
 
             parsed = parse_law_mod_json(mod_res.text)
+            
+            # Log to trace if enabled
+            if tracer:
+                tracer.log_entry(TraceEntry(
+                    article_id=ch.get("db_id"),
+                    article_number=ch.get("article_number"),
+                    classification="modifies",
+                    prompt=mod_prompt,
+                    raw_output=mod_res.text,
+                    parsed_output=parsed,
+                    metadata={"retries": mod_res.retries}
+                ))
+
             law_mod_results.append({
                 "article_id": ch.get("db_id"),
                 "article_number": ch.get("article_number"),
@@ -199,6 +236,19 @@ def run_workflow(
             new_prompt = "[SCHEMA:LAW_NEW]\n" + get_prompt("law_new_json") + "\n" + ch["content"]
             new_res = generate_with_retry(_gen_fn, new_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
             parsed_new = parse_law_new_json(new_res.text)
+            
+            # Log to trace if enabled
+            if tracer:
+                tracer.log_entry(TraceEntry(
+                    article_id=ch.get("db_id"),
+                    article_number=ch.get("article_number"),
+                    classification="new_provision",
+                    prompt=new_prompt,
+                    raw_output=new_res.text,
+                    parsed_output=parsed_new,
+                    metadata={"retries": new_res.retries}
+                ))
+
             law_new_results.append({
                 "article_id": ch.get("db_id"),
                 "article_number": ch.get("article_number"),
@@ -209,6 +259,12 @@ def run_workflow(
             })
 
     # TODO: pipeline Stage 2 & 3 (placeholder)
+    
+    # Close tracer if it was created
+    if tracer:
+        tracer.close()
+        logger.info("Reasoning trace written to: %s", tracer.trace_file_path)
+    
     return {
         "stage1": stage1_results,
         "law_modifications": law_mod_results,

@@ -6,7 +6,7 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 # MODEL & DEVICE
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL_ID: str = "google/gemma-7b-it"  # <-- change if needed
+DEFAULT_MODEL_ID: str = "google/gemma-4b-it"  # <-- change if needed
 TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
 
 # ---------------------------------------------------------------------------
@@ -35,10 +35,17 @@ PUNCTUATION_ENDINGS: tuple[str, ...] = (".", "?", "!", "…", ".”", "?")
 RUN_TIMESTAMP: str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 # Default SQLite columns – update if schema differs
-DB_PATH: str = "data/articles.db"
+DB_PATH: str = "/mnt/data/AI4Deliberation/deliberation_data_gr_MIGRATED_FRESH_20250602170747.db"
 TABLE_NAME: str = "articles"
 TITLE_COLUMN: str = "title"
 CONTENT_COLUMN: str = "content"
+
+# ---------------------------------------------------------------------------
+# REASONING TRACE SETTINGS
+# ---------------------------------------------------------------------------
+ENABLE_REASONING_TRACE: bool = False  # toggled by CLI or env var
+TRACE_OUTPUT_DIR: str = "traces"
+TRACE_FILENAME_TEMPLATE: str = "reasoning_trace_c{consultation_id}_{timestamp}.log"
 
 __all__ = [
     "DEFAULT_MODEL_ID",
@@ -55,4 +62,7 @@ __all__ = [
     "TABLE_NAME",
     "TITLE_COLUMN",
     "CONTENT_COLUMN",
+    "ENABLE_REASONING_TRACE",
+    "TRACE_OUTPUT_DIR",
+    "TRACE_FILENAME_TEMPLATE",
 ]
