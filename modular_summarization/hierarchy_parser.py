@@ -28,6 +28,7 @@ class Article:
     title: str
     text: str
     chapter: "Chapter" | None = field(repr=False, default=None)
+    summary: str | None = None  # Stage-1 summary
 
     @property
     def words(self) -> int:
@@ -39,6 +40,7 @@ class Chapter:
     name: str  # Greek numeral (e.g., "Α'")
     articles: List[Article] = field(default_factory=list)
     part: "Part" | None = field(repr=False, default=None)
+    summary: str | None = None  # Stage-2 summary
 
     def iter_text(self) -> str:
         return "\n\n".join(a.text for a in self.articles)
@@ -48,6 +50,7 @@ class Chapter:
 class Part:
     name: str  # Greek numeral with prime mark
     chapters: List[Chapter] = field(default_factory=list)
+    summary: str | None = None  # Stage-3 summary
 
     def iter_text(self) -> str:
         return "\n\n".join(ch.iter_text() for ch in self.chapters)
@@ -60,6 +63,33 @@ class BillHierarchy:
     # ------------------------------------------------------------------
     # Factory ------------------------------------------------------------------
     # ------------------------------------------------------------------
+    @classmethod
+    def to_dict(self):  # noqa: D401 – simple serializer
+        return {
+            "parts": [
+                {
+                    "name": p.name,
+                    "summary": p.summary,
+                    "chapters": [
+                        {
+                            "name": c.name,
+                            "summary": c.summary,
+                            "articles": [
+                                {
+                                    "id": a.id,
+                                    "title": a.title,
+                                    "summary": a.summary,
+                                }
+                                for a in c.articles
+                            ],
+                        }
+                        for c in p.chapters
+                    ],
+                }
+                for p in self.parts
+            ]
+        }
+
     @classmethod
     def from_db_rows(cls, rows):
         """Build hierarchy tree from rows provided by `section_parser.parse_titles`."""

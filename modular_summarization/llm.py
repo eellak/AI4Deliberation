@@ -12,6 +12,7 @@ from typing import Callable
 import logging
 import os
 import json
+import re
 from threading import local
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,12 @@ USE_LMFE = bool(int(os.getenv("USE_LMFE", "1")))  # default ON
 
 try:
     if USE_LMFE:
-        from .schemas import LAW_MOD_SCHEMA, LAW_NEW_SCHEMA  # noqa: F401
+        from .schemas import (
+            LAW_MOD_SCHEMA,
+            LAW_NEW_SCHEMA,
+            CHAPTER_SUMMARY_SCHEMA,
+            PART_SUMMARY_SCHEMA,
+        )  # noqa: F401
         from .lmfe_utils import build_prefix_fn  # noqa: F401
         _LMFE_AVAILABLE = True
     else:
@@ -115,15 +121,8 @@ def _stub_generator(prompt: str, max_tokens: int) -> str:  # noqa: D401
             ensure_ascii=False,
         )
     else:
-        return json.dumps(
-            {
-                "article_title": "Σύμβολο Stub",
-                "provision_type": "ρύθμιση",
-                "core_provision_summary": "stub",
-                "key_themes": ["stub"],
-            },
-            ensure_ascii=False,
-        )
+        # Default stub for Stage-2/3 prompts: simple summary wrapper
+        return json.dumps({"summary": "stub"}, ensure_ascii=False)
 
 
 def _build_real_generator() -> Callable[[str, int], str]:
@@ -169,14 +168,26 @@ def _build_real_generator() -> Callable[[str, int], str]:
                 setattr(_thread_locals, key, fn)
             return fn
 
+        schema_map = {
+            "LAW_MOD": LAW_MOD_SCHEMA,
+            "LAW_NEW": LAW_NEW_SCHEMA,
+            "CHAPTER_SUM": CHAPTER_SUMMARY_SCHEMA,
+            "PART_SUM": PART_SUMMARY_SCHEMA,
+        }
+
         def _gemma_generate_lmfe(prompt: str, max_tokens: int) -> str:  # type: ignore[override]
             # Schema routing via explicit tag
-            if prompt.lstrip().startswith("[SCHEMA:LAW_MOD]"):
-                schema = LAW_MOD_SCHEMA
+            match = re.match(r"\[SCHEMA:(\w+)\]", prompt)
+            if match:
+                schema_name = match.group(1)
+                schema = schema_map.get(schema_name)
             else:
-                schema = LAW_NEW_SCHEMA
+                schema = None
 
-            pfx_fn = _get_prefix_fn(schema)
+            if schema is not None:
+                pfx_fn = _get_prefix_fn(schema)
+            else:
+                pfx_fn = None
 
             inputs = tokenizer(prompt, return_tensors="pt").to(model.device)  # type: ignore[arg-type]
             input_len = inputs["input_ids"].shape[1]

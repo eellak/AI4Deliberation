@@ -69,4 +69,28 @@ LAW_NEW_SCHEMA = {
     ],
 }
 
-__all__ = ["LAW_MOD_SCHEMA", "LAW_NEW_SCHEMA"] 
+# ---------------------------------------------------------------------------
+# Stage-2 / Stage-3 summary schemas (single-field for now)
+# ---------------------------------------------------------------------------
+CHAPTER_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "maxLength": 2000},
+    },
+    "required": ["summary"],
+}
+
+PART_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "maxLength": 3000},
+    },
+    "required": ["summary"],
+}
+
+__all__ = [
+    "LAW_MOD_SCHEMA",
+    "LAW_NEW_SCHEMA",
+    "CHAPTER_SUMMARY_SCHEMA",
+    "PART_SUMMARY_SCHEMA",
+] 

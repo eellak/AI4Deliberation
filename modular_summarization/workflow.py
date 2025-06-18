@@ -181,18 +181,38 @@ def run_workflow(
     stage1_results: List[str] = []
     law_mod_results: List[Dict[str, Any]] = []
     law_new_results: List[Dict[str, Any]] = []
-    intro_articles: List[Dict[str, Any]] = []  # store Σκοπός/Αντικείμενο raw chunks
+    intro_articles: List[Dict[str, Any]] = []  # Σκοπός / Αντικείμενο chunks for CSV
 
     _gen_fn = generator_fn or get_generator(dry_run=dry_run)
 
+    # Track which intro types have been captured per Part (by first DB title)
+    seen_intro: Set[Tuple[str, str]] = set()  # (part_name_from_db_title, intro_type)
+
     for ch in all_chunks:
+        art_num = ch.get("article_number")
         # Detect and store introductory Σκοπός / Αντικείμενο articles ----------------
-        if ch.get("article_number") == 1 and is_skopos_article(ch):
-            intro_articles.append({"type": "skopos", **ch})
-            continue  # skip summarisation for this chunk
-        if ch.get("article_number") == 2 and is_antikeimeno_article(ch):
-            intro_articles.append({"type": "antikeimeno", **ch})
-            continue  # skip summarisation for this chunk
+        # Constraints:
+        #   • Article 1  → Σκοπός
+        #   • Article 2  → Αντικείμενο
+        # Any other article numbers are ignored to avoid false positives.
+        # We do the coarse filter here and rely on later Part/Chapter mapping in
+        # generate_stage1_csvs for a final sanity-check.
+        if art_num == 1 and is_skopos_article(ch):
+            intro_articles.append({
+                "article_id": ch.get("db_id"),
+                "article_number": art_num,
+                "type": "skopos",
+                "raw_content": ch["content"],
+            })
+            continue  # no LLM processing needed for proper intro articles
+        elif art_num == 2 and is_antikeimeno_article(ch):
+            intro_articles.append({
+                "article_id": ch.get("db_id"),
+                "article_number": art_num,
+                "type": "antikeimeno",
+                "raw_content": ch["content"],
+            })
+            continue
 
         tok, words, _ = length_metrics(ch["content"])
         # Stage1 summarization kept for future use (unchanged logic)
@@ -269,6 +289,7 @@ def run_workflow(
         "stage1": stage1_results,
         "law_modifications": law_mod_results,
         "law_new_provisions": law_new_results,
+        "intro_articles": intro_articles,
     }
 
 

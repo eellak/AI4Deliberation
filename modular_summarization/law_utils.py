@@ -28,6 +28,7 @@ __all__ = [
     "detect_scope_and_objective",
     "is_skopos_article",
     "is_antikeimeno_article",
+    "get_summary",
 ]
 
 # ---------------------------------------------------------------------------
@@ -281,6 +282,41 @@ def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
 
     data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]
     return {k: data[k] for k in allowed}
+
+
+# ---------------------------------------------------------------------------
+# Generic single-field summary JSON helper (Stage 2 & 3)
+# ---------------------------------------------------------------------------
+
+def get_summary(raw: str) -> Optional[str]:  # noqa: D401
+    """Return the `summary` value from a JSON string produced by Stage 2/3 prompts.
+
+    The LLM is expected to return JSON of the form ``{"summary": "..."}``.
+    The function gracefully handles Markdown fences and extraction similar to
+    :pyfunc:`parse_law_mod_json`.
+
+    Parameters
+    ----------
+    raw : str
+        Raw LLM output string (may include Markdown code fences or extra text).
+
+    Returns
+    -------
+    str | None
+        The summary text if valid; otherwise ``None``.
+    """
+    cleaned = _strip_code_fence(raw)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    summary = data.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    return None
 
 
 # ---------------------------------------------------------------------------

@@ -13,7 +13,8 @@ TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
 # TOKEN BUDGETS PER STAGE (rough defaults – override via kwargs)
 # ---------------------------------------------------------------------------
 MAX_TOKENS_STAGE1: int = 400   # per-article summary
-MAX_TOKENS_STAGE2: int = 1_500  # per-chapter / cohesive summary
+MAX_TOKENS_STAGE2: int = 400   # per-chapter / cohesive summary
+MAX_TOKENS_STAGE3: int = 800   # per-part exposition
 MAX_TOKENS_FINAL:  int = 2_000  # final exposition
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,7 @@ __all__ = [
     "TORCH_DTYPE",
     "MAX_TOKENS_STAGE1",
     "MAX_TOKENS_STAGE2",
+    "MAX_TOKENS_STAGE3",
     "MAX_TOKENS_FINAL",
     "TARGET_COMPRESSION_RATIO",
     "MIN_WORDS_FOR_SUMMARY",

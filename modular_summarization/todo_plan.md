@@ -40,49 +40,24 @@
 - [x] `hierarchy_parser.py` created wrapping `section_parser` and exposing Part/Category/Article dataclasses.
 - Cooperates with `advanced_parser` for gap-filled articles.
 
-### 4 – Dynamic prompt & token budgeting (IN PROGRESS)
-- Implemented `compression.summarization_budget()` returning `target_words`, `target_sentences`, `token_limit`.
-- Prompt templates now include placeholders `{target_words}`, `{target_sentences}`, `{token_limit}` and are formatted at runtime.
-- `retry.generate_with_retry()` accepts `token_limit` to shrink on continuation.
-- **Next**: propagate budgeting to Stage 2/3, add unit tests.
-
-### 5 – Hierarchical dry-run presentation (NEXT)
-- When `--dry-run` flag is set:
-  - Parse DB articles → build `BillHierarchy`.
-  - For each Part → Category → Article show:
-    * title, word count, token estimate.
-    * **planned prompt excerpt** (first 40 chars) indicating stage and target tokens.
-  - Output in Markdown or CSV for human review.
-- Ensure runner skips LLM calls but exercises full parsing/metric pipeline.
-
-### 5b – Dry-run regression tests (NEXT)
-- PyTest module `test_dry_run.py` that iterates over sample consultation IDs (fixture list).
-- Calls `run_workflow(consultation_id, dry_run=True)` and:
-  1. Asserts that **article sequences** per Part/Category are continuous (via `hierarchy_parser.verify_continuity`).
-  2. Asserts no missing Part/Category numbers across the hierarchy.
-  3. Saves generated `dry_run_markdown` into `tests/output/{cid}_hierarchy.txt` for human diff review.
-  4. Verifies that each Article block includes word/token counts.
-- Add CLI `scripts/generate_dry_runs.py` for regenerating all hierarchy files in bulk.
-
-### 6 – Model loading & inference helpers (NEW)
-- Add `llm.py` (or extend `workflow.py`) to load Gemma-3B/7B with:
-  ```python
-  os.environ["TORCHDYNAMO_DISABLE"] = "1"
-  model = Gemma3ForConditionalGeneration.from_pretrained(…, device_map="auto", torch_dtype=torch.bfloat16, attn_implementation="sdpa").eval()
-  processor = AutoProcessor.from_pretrained(model_id)
-  ```
-- Ensure graceful fallback when HF download fails (log & raise).
-- Expose `generate(text, max_tokens)` wrapping processor → model → decode.
-- Share across workflow & tests.
-- Align CLI flags for `--model-id`, `--dtype`, etc.
-
-### 7 – Prompt library refactor (FUTURE)
+### 7 – Hierarchical Data Model & Storage (NEW)
+- [ ] Extend `hierarchy_parser.py` dataclasses:
+  * `ArticleNode`: add `stage1_summary: str | None`
+  * `ChapterNode`: add `stage2_summary: str | None`
+  * `PartNode`: add `stage3_summary: str | None`
+- [ ] Provide `to_dict()` / `from_dict()` helpers for JSON-serialisation preserving the tree & summaries.
+- [ ] Persist final tree as `<consultation_id>_summaries.json`.
 - `prompts.py` must include **all** templates:
   * Stage 1 (article), Stage 2 (category), Stage 3 (part), continuation, shortening, etc.
   * Each Stage prompt must interpolate dynamic values (e.g., Category name, token budget).
 - Provide factory `get_prompt(stage_id, **kwargs)` for formatted insertion.
 
-### 8 – Port advanced gap-filling parser logic (FUTURE)
+### 8 – Stage 2 summarisation – Chapter level (ΚΕΦΑΛΑΙΟ)
+- [ ] In `workflow.py` iterate over `ChapterNode`s:
+  1. Collect child `ArticleNode.stage1_summary`.
+  2. Compute dynamic budget via `summarization_budget()`.
+  3. Format `stage2_cohesive` prompt.
+  4. Store result in `chapter.stage2_summary`.
 - Extend `advanced_parser.py` with:
   - Quote-aware header detection.
   - Title-range parsing (`parse_db_article_title_range`).
@@ -91,21 +66,36 @@
   - **Hierarchy gap fix**: For any Μέρος that has *null* Κεφάλαια in its DB titles, *before* article parsing scan the article **contents** for `ΚΕΦΑΛΑΙΟ` headers (e.g. `### ΚΕΦΑΛΑΙΟ Β΄`).  Detect these and inject synthetic Chapter nodes into the hierarchy, then proceed with normal article header parsing.
   - Add regression tests with complex fixtures to guarantee identical chunk outputs.
 
-### 9 – Introductory article detection & exclusion (NEW)
+### 9 – Stage 3 summarisation – Part level (ΜΕΡΟΣ)
+- [ ] For each `PartNode` gather `chapter.stage2_summary`.
+- [ ] Compute budget, format prompt `stage3_exposition`.
+- [ ] Store in `part.stage3_summary`.
 - [ ] Implement accent-insensitive exact-word detectors `is_skopos`, `is_antikeimeno` in `law_utils.py`.
 - [ ] In `workflow.py` capture first two logical articles per Μέρος, classify, store in `context["intro_articles"]` and exclude from summarisation loops.
 - [ ] Ensure these raw texts are returned in `workflow` output for later surface.
 - [ ] Unit tests for detection accuracy and exclusion behaviour.
 
-### 10 – Hierarchical summarisation aggregation (NEW)
+### 10 – Workflow refactor & API
+- [ ] Keep main `workflow.run_workflow()` <100 LOC by delegating to helpers:
+  * `summarize_chapter(chapter_node)`
+  * `summarize_part(part_node)`
+- [ ] Return nested dict with summaries at all levels.
 - [ ] Generate article-level summaries (Stage 1), then aggregate to ΚΕΦΑΛΑΙΟ (Stage 2) and to Μέρος (Stage 3) using dynamic budgets.
 - [ ] Return `chapter_summaries` and `part_summaries` in workflow output.
 
-### 11 – Tests & CI (FUTURE)
+### 11 – Prompt library updates
+- [ ] Ensure Stage 2 & 3 prompts accept dynamic placeholders (token budget, names).
+- [ ] Add helper `format_prompt(stage_id, hierarchy_node, **budget)` in `prompts.py`.
 - PyTest suite covering parser, hierarchy aggregation, compression maths, prompt integrity & orchestrator E2E dry-run.
 - Github Actions (or similar) for lint & unit tests.
 
-### 10 – Documentation (FUTURE)
+### 12 – Tests & CI
+- PyTest suite covering parser, hierarchy aggregation, compression maths, prompt integrity & orchestrator E2E dry-run.
+- Github Actions (or similar) for lint & unit tests.
+
+### 13 – Documentation
+- Auto-generated API docs via `mkdocs`.
+- Detailed examples / notebooks.
 - Auto-generated API docs via `mkdocs`.
 - Detailed examples / notebooks.
 

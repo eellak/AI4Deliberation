@@ -32,14 +32,20 @@ def generate_with_retry(
     max_tokens: int,
     max_retries: int = 2,
 ) -> LLMGenerationResult:
-    """Call `generator_fn` with continuation / shortening retry logic."""
+    """Call `generator_fn` with continuation / shortening retry logic.
+
+    Uses a simple truncation heuristic to decide if the model response is
+    incomplete and, if so, asks the model to continue up to `max_retries`
+    times.  This helper is generic and may be reused by other workflows that
+    still need automatic continuation.
+    """
     retries = 0
     while True:
         output = generator_fn(prompt, max_tokens)
         if not _is_truncated(output) or retries >= max_retries:
             return LLMGenerationResult(text=output, truncated=_is_truncated(output), retries=retries)
 
-        # Determine continuation strategy
+        # Build continuation prompt asking for a concise finish
         continuation_prompt = f"{get_prompt('concise_continuation')}\n{output}"
         max_tokens = int(max_tokens * (1 - TARGET_COMPRESSION_RATIO))
         prompt = continuation_prompt
