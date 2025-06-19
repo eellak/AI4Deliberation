@@ -13,7 +13,7 @@ import logging
 from typing import Callable, Dict, List, Optional, Any, TypeVar, Union, cast
 
 from .law_types import NarrativePlan, GeneratedParagraph, StoryBeat
-from .stage23_helpers import (
+from .stage23_helpers_v2 import (
     construct_stage3_plan_input,
     construct_stage3_synth_input,
 )
@@ -160,7 +160,7 @@ def _try_fix_incomplete_json(json_text: str) -> Optional[str]:
 
 
 def plan_narrative(
-    chapter_summaries: List[str],
+    chapter_summaries: Union[List[str], Dict[str, str]],
     intro_lines: Optional[List[str]],
     generator_fn: LLMGeneratorFn,
     max_tokens: Optional[int] = None,
@@ -188,52 +188,93 @@ def plan_narrative(
     ValueError
         If the LLM response cannot be parsed as valid JSON with the expected schema
     """
-    # Determine which prompt to use based on presence of intro lines
-    prompt_key = "stage3_plan_a" if intro_lines else "stage3_plan_b"
-    
-    # Prepare input data
+    # Use dynamic prompt with beat placeholders
+    prompt_key = "stage3_plan_dyn"
+
+    # Prepare keyed mapping regardless of list/dict input
     input_data = construct_stage3_plan_input(chapter_summaries, intro_lines)
     input_json_str = json.dumps(input_data, ensure_ascii=False, indent=2)
-    
-    # Calculate token budget if not specified
+
+    # Beat-range heuristics ---------------------------------------------------
+    n_chapters = len(chapter_summaries) if isinstance(chapter_summaries, (list, dict)) else 1
+    min_beats = max(2, n_chapters // 3) if n_chapters > 1 else 1
+    max_beats = n_chapters
+
+    # Token budget ------------------------------------------------------------
     if max_tokens is None:
-        # Estimate input length: everything in intro_lines + chapter_summaries
-        total_input_text = " ".join(chapter_summaries)
+        total_input_text = " ".join(list(chapter_summaries.values()) if isinstance(chapter_summaries, dict) else chapter_summaries)
         if intro_lines:
             total_input_text += " ".join(intro_lines)
-        
-        # Use 70% of input length for planning (varies based on needs)
         word_count = len(total_input_text.split())
-        target_words = max(int(word_count * 0.7), 300)  # At least 300 target words
-        max_tokens = int(target_words * 4)  # Allow extra tokens for reasoning in JSON creation
-    
-    # Get the prompt template (no formatting needed since it's a raw string)
+        target_words = max(int(word_count * 0.7), 300)
+        max_tokens = int(target_words * 4)
+
+    # Build prompt ------------------------------------------------------------
     try:
-        _log.debug(f"Looking for prompt key: '{prompt_key}'")
         from .prompts import get_prompt
-        prompt_template = get_prompt(prompt_key)
-        _log.debug(f"Found prompt template starting with: {prompt_template[:50]}...")
-        
-        # Append the input data to the prompt
-        prompt = prompt_template + "\n\n**Δεδομένα Εισόδου:**\n" + input_json_str
-        
+        template_raw = get_prompt(prompt_key)
+        # Compose dynamic placeholder values
+        allowed_keys_descriptive = list(input_data["περιλήψεις_κεφαλαίων"].keys())
+        allowed_keys_csv = ", ".join(allowed_keys_descriptive)
+        allowed_range = f"0–{n_chapters - 1}"
+        prompt_filled = template_raw.format(
+            min_beats=min_beats,
+            max_beats=max_beats,
+            allowed_keys_csv=allowed_keys_csv,
+            allowed_range=allowed_range,
+            input_data_json=input_json_str,
+        )
+        prompt = prompt_filled
     except KeyError as e:
-        _log.error(f"Could not find prompt with key: {prompt_key}")
-        raise ValueError(f"Invalid prompt key: {prompt_key}") from e
+        _log.error(f"Prompt key '{prompt_key}' not found")
+        raise
     except Exception as e:
-        _log.error(f"Error preparing prompt: {e}")
-        raise ValueError(f"Failed to prepare prompt with input data") from e
+        _log.error(f"Failed to format prompt: {e}")
+        raise
     
-    # Call the LLM with schema enforcement
-    _log.info(f"Generating narrative plan using {prompt_key} (max_tokens={max_tokens})")
-    _log.debug(f"Input data for planning: {len(str(input_data))} chars, {len(chapter_summaries)} chapters")
-    _log.debug(f"Prompt length: {len(prompt)} chars")
-    _log.debug(f"Calling generator_fn with prompt starting: {prompt[:100]}...")
-    
-    # Generate narrative plan – schema enforcement handled automatically via [SCHEMA:] tag
-    response = generator_fn(prompt, max_tokens)
-    
-    _log.debug(f"Generator returned response of type: {type(response)}, length: {len(response) if response else 'None'}")
+    # -----------------------------------------------------------------------
+    # Call the LLM with validation + retry -----------------------------------
+    # -----------------------------------------------------------------------
+    from .validator import generate_with_validation, validate_narrative_plan
+
+    # Allow both descriptive keys (e.g. "kefalaio_0") **and** bare numeric indices
+    allowed_keys: List[Union[str, int]] = list(input_data["περιλήψεις_κεφαλαίων"].keys())
+    # Add numeric indices (int and str) up to the number of chapters so the validator
+    # accepts LLM outputs that reference 0-based integers instead of the descriptive keys.
+    allowed_keys.extend(range(n_chapters))
+    allowed_keys.extend([str(i) for i in range(n_chapters)])
+
+    def _plan_validator(raw: str, keys):
+        try:
+            json_str = extract_json_from_text(raw)
+            plan_obj = json.loads(json_str)
+        except Exception as exc:
+            return [f"JSON extraction/parsing error: {exc}"]
+        return validate_narrative_plan(plan_obj, keys)
+
+    _log.info(f"Generating narrative plan with validation (max_tokens={max_tokens})")
+
+    try:
+        response, retries = generate_with_validation(
+            prompt,
+            max_tokens,
+            generator_fn,
+            _plan_validator,
+            validator_args=(allowed_keys,),
+            max_retries=2,
+        )
+        _log.debug(f"Narrative plan generated after {retries} retries")
+    except Exception as e:
+        _log.error(f"Failed to generate validated narrative plan: {e}")
+        raise
+
+    # Parse validated response ------------------------------------------------
+    try:
+        json_str = extract_json_from_text(response)
+        narrative_plan = json.loads(json_str)
+    except Exception as e:
+        _log.error(f"Unexpected parse failure after validation: {e}")
+        raise ValueError("Could not parse narrative plan JSON after validation") from e
     
     # Parse the response (expected to be JSON format)
     try:
@@ -314,7 +355,7 @@ def plan_narrative(
 
 def synthesize_paragraph(
     narrative_plan: NarrativePlan,
-    chapter_summaries: List[str],
+    chapter_summaries: Union[List[str], Dict[str, str]],
     beat_index: int,
     generator_fn: LLMGeneratorFn,
     max_tokens: Optional[int] = None,
@@ -326,7 +367,7 @@ def synthesize_paragraph(
     narrative_plan : NarrativePlan
         The complete narrative plan
     chapter_summaries : List[str]
-        All chapter summaries
+        All chapter summaries, either list or dict keyed by chapter IDs
     beat_index : int
         Index of the story beat to synthesize
     generator_fn : Callable
@@ -339,23 +380,37 @@ def synthesize_paragraph(
     str
         The generated paragraph text
     """
+    # -------------------------------------------------------------------
     # Prepare input data for synthesis
+    # -------------------------------------------------------------------
     input_data = construct_stage3_synth_input(narrative_plan, chapter_summaries, beat_index)
     input_json_str = json.dumps(input_data, ensure_ascii=False, indent=2)
     
     # Calculate token budget if not specified
     if max_tokens is None:
-        # Sum the lengths of the source chapters for this beat
-        source_indices = narrative_plan["narrative_sections"][beat_index].get("source_chapters", [])
+        source_keys = narrative_plan["narrative_sections"][beat_index].get("source_chapters", [])
         total_source_text = ""
-        for idx in source_indices:
-            if 0 <= idx < len(chapter_summaries):
-                total_source_text += chapter_summaries[idx]
-        
+        if isinstance(chapter_summaries, dict):
+            for k in source_keys:
+                txt = chapter_summaries.get(k)
+                if txt:
+                    total_source_text += txt + " "
+        else:
+            for k in source_keys:
+                # Convert potential keyed string to index
+                if isinstance(k, int):
+                    idx = k
+                else:
+                    try:
+                        idx = int(str(k).split("_")[-1])
+                    except ValueError:
+                        continue
+                if 0 <= idx < len(chapter_summaries):
+                    total_source_text += chapter_summaries[idx] + " "
         # Target around 30% compression for each paragraph
         word_count = len(total_source_text.split())
-        target_words = max(int(word_count * 0.3), 60)  # At least 60 words per paragraph
-        max_tokens = int(target_words * 3)  # Allow extra tokens for thinking
+        target_words = max(int(word_count * 0.3), 60)
+        max_tokens = int(target_words * 3)
     
     # Get the prompt template and append input data
     prompt_template = get_prompt("stage3_synth")
@@ -389,8 +444,30 @@ def synthesize_paragraph(
         return cleaned
 
 
+def summarize_single_chapter(
+    chapter_text: str,
+    generator_fn: LLMGeneratorFn,
+    max_tokens: int = 600,
+) -> str:
+    """Fast-track summarization for Parts with a single Chapter."""
+    prompt = get_prompt("stage3_single_chapter") + "\n\n**Κείμενο Κεφαλαίου:**\n" + chapter_text
+    resp = generator_fn(prompt, max_tokens)
+    try:
+        json_str = extract_json_from_text(resp)
+        obj = json.loads(json_str)
+        if isinstance(obj, dict) and "summary" in obj:
+            return obj["summary"]
+    except Exception:
+        pass
+    return resp.strip()
+
+
+# ---------------------------------------------------------------------------
+# Public orchestration helper
+# ---------------------------------------------------------------------------
+
 def generate_part_summary(
-    chapter_summaries: List[str],
+    chapter_summaries: Union[List[str], Dict[str, str]],
     intro_lines: Optional[List[str]] = None,
     generator_fn: LLMGeneratorFn = None,
     max_tokens_total: Optional[int] = None,
@@ -423,7 +500,7 @@ def generate_part_summary(
     
     # Calculate total token budget if not specified
     if max_tokens_total is None:
-        total_input_text = " ".join(chapter_summaries)
+        total_input_text = " ".join(list(chapter_summaries.values()) if isinstance(chapter_summaries, dict) else chapter_summaries)
         if intro_lines:
             total_input_text += " ".join(intro_lines)
         
@@ -444,6 +521,12 @@ def generate_part_summary(
         _log.warning(f"Increased total budget to {max_tokens_total} to accommodate minimum planning budget")
     
     # Step 1: Generate the narrative plan
+    # Fast-track if only one chapter
+    n_chaps = len(chapter_summaries) if isinstance(chapter_summaries, (list, dict)) else 1
+    if n_chaps == 1:
+        single_text = next(iter(chapter_summaries.values())) if isinstance(chapter_summaries, dict) else chapter_summaries[0]
+        return summarize_single_chapter(single_text, generator_fn)
+
     narrative_plan = plan_narrative(
         chapter_summaries,
         intro_lines,
