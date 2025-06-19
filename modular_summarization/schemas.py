@@ -88,9 +88,51 @@ PART_SUMMARY_SCHEMA = {
     "required": ["summary"],
 }
 
+# ---------------------------------------------------------------------------
+# Stage-3 Expanded: Narrative Planning Schemas
+# ---------------------------------------------------------------------------
+NARRATIVE_PLAN_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "overall_narrative_arc": {"type": "string", "maxLength": 300},
+        "protagonist": {"type": "string", "maxLength": 150},
+        "problem": {"type": "string", "maxLength": 300},
+        "narrative_sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "section_title": {"type": "string", "maxLength": 100},
+                    "section_role": {"type": "string", "maxLength": 250},
+                    "source_chapters": {
+                        "type": "array",
+                        "items": {"type": "integer", "minimum": 0},
+                        "minItems": 1,
+                        "maxItems": 10,
+                    },
+                },
+                "required": ["section_title", "section_role", "source_chapters"],
+            },
+            "minItems": 1,
+            "maxItems": 8,
+        },
+    },
+    "required": ["overall_narrative_arc", "protagonist", "problem", "narrative_sections"],
+}
+
+NARRATIVE_SECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "paragraph": {"type": "string", "maxLength": 800},
+    },
+    "required": ["paragraph"],
+}
+
 __all__ = [
     "LAW_MOD_SCHEMA",
     "LAW_NEW_SCHEMA",
     "CHAPTER_SUMMARY_SCHEMA",
     "PART_SUMMARY_SCHEMA",
+    "NARRATIVE_PLAN_SCHEMA",
+    "NARRATIVE_SECTION_SCHEMA",
 ] 

@@ -39,6 +39,18 @@ except Exception as e:  # pragma: no cover – import failure fallback
     logger.warning("transformers/Gemma3 not available: %s", e)
 
 # ---------------------------------------------------------------------------
+# Helper exported for advanced callers
+# ---------------------------------------------------------------------------
+
+def get_model_and_tokenizer():  # noqa: D401
+    """Return (model, tokenizer) pair if available, loading the model if needed."""
+    model, processor = _load_model_and_processor()
+    if processor is None:
+        return model, None
+    tok = getattr(processor, "tokenizer", processor)
+    return model, tok
+
+# ---------------------------------------------------------------------------
 # Optional LM-Format-Enforcer integration
 # ---------------------------------------------------------------------------
 
@@ -52,6 +64,8 @@ try:
             LAW_NEW_SCHEMA,
             CHAPTER_SUMMARY_SCHEMA,
             PART_SUMMARY_SCHEMA,
+            NARRATIVE_PLAN_SCHEMA,
+            NARRATIVE_SECTION_SCHEMA,
         )  # noqa: F401
         from .lmfe_utils import build_prefix_fn  # noqa: F401
         _LMFE_AVAILABLE = True
@@ -120,6 +134,24 @@ def _stub_generator(prompt: str, max_tokens: int) -> str:  # noqa: D401
             },
             ensure_ascii=False,
         )
+    elif "[SCHEMA:NARRATIVE_PLAN]" in prompt:
+        return json.dumps(
+            {
+                "overall_narrative_arc": "stub arc",
+                "protagonist": "stub protagonist",
+                "problem": "stub problem",
+                "narrative_sections": [
+                    {
+                        "section_title": "Ενότητα 1",
+                        "section_role": "stub role",
+                        "source_chapters": [0, 1],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    elif "[SCHEMA:NARRATIVE_SECTION]" in prompt:
+        return json.dumps({"paragraph": "stub paragraph"}, ensure_ascii=False)
     else:
         # Default stub for Stage-2/3 prompts: simple summary wrapper
         return json.dumps({"summary": "stub"}, ensure_ascii=False)
@@ -173,6 +205,8 @@ def _build_real_generator() -> Callable[[str, int], str]:
             "LAW_NEW": LAW_NEW_SCHEMA,
             "CHAPTER_SUM": CHAPTER_SUMMARY_SCHEMA,
             "PART_SUM": PART_SUMMARY_SCHEMA,
+            "NARRATIVE_PLAN": NARRATIVE_PLAN_SCHEMA,
+            "NARRATIVE_SECTION": NARRATIVE_SECTION_SCHEMA,
         }
 
         def _gemma_generate_lmfe(prompt: str, max_tokens: int) -> str:  # type: ignore[override]

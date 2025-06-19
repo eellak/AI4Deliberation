@@ -22,6 +22,7 @@ from .law_utils import (
     parse_law_new_json,
     get_summary,
 )
+from .law_types import NarrativePlan, StoryBeat, PlanningInput, SynthesisInput
 
 __all__ = [
     "greek_numeral_to_int",
@@ -29,6 +30,8 @@ __all__ = [
     "build_bullet_line",
     "build_chapter_prompt",
     "build_part_prompt",
+    "construct_stage3_plan_input",
+    "construct_stage3_synth_input", 
     "parse_chapter_summary",
     "parse_part_summary",
 ]
@@ -246,3 +249,83 @@ def parse_part_summary(raw: str) -> Optional[str]:
         return summ
     cleaned = _clean_text(raw)
     return cleaned or None
+
+
+# ---------------------------------------------------------------------------
+# 5. Stage-3 Expansion: Narrative Planning & Synthesis
+# ---------------------------------------------------------------------------
+
+def construct_stage3_plan_input(chapter_summaries: List[str], intro_lines: Optional[List[str]] = None) -> PlanningInput:
+    """Construct the input JSON for the narrative planning stage (Stage 3.1).
+    
+    Parameters
+    ----------
+    chapter_summaries : List[str]
+        List of Chapter summaries from Stage-2
+    intro_lines : List[str], optional
+        Optional list where intro_lines[0] is skopos and intro_lines[1] is antikeimeno
+        If provided, Stage3_plan_a will be used, otherwise Stage3_plan_b.
+    
+    Returns
+    -------
+    PlanningInput
+        A JSON-serializable dict with the structured input for the LLM
+    """
+    input_json = {}
+    
+    # The chapters as an indexed list (starting at 0)
+    input_json["chapter_summaries"] = chapter_summaries
+    
+    # Add skopos and antikeimeno if available
+    if intro_lines and len(intro_lines) >= 1:
+        input_json["skopos"] = intro_lines[0]
+    if intro_lines and len(intro_lines) >= 2:
+        input_json["antikeimeno"] = intro_lines[1]
+        
+    return input_json
+
+
+def construct_stage3_synth_input(
+    narrative_plan: NarrativePlan,
+    chapter_summaries: List[str], 
+    beat_index: int
+) -> SynthesisInput:
+    """Construct the input JSON for a single chunk synthesis call (Stage 3.2).
+    
+    Parameters
+    ----------
+    narrative_plan : NarrativePlan
+        The complete narrative plan generated in Stage 3.1
+    chapter_summaries : List[str]
+        All chapter summaries, to pull from based on beat indices
+    beat_index : int
+        Index of the specific αφηγηματική_ενότητα to process
+        
+    Returns
+    -------
+    SynthesisInput
+        A JSON-serializable dict with input for the synthesis prompt
+    """
+    if beat_index >= len(narrative_plan["narrative_sections"]):
+        raise ValueError(f"Beat index {beat_index} out of bounds")
+        
+    # Get the specific beat we're synthesizing
+    target_beat = narrative_plan["narrative_sections"][beat_index]
+    
+    # Collect the relevant chapter summaries for this beat
+    source_indices = target_beat.get("source_chapters", [])
+    relevant_chapter_texts = []
+    for idx in source_indices:
+        if 0 <= idx < len(chapter_summaries):
+            relevant_chapter_texts.append(chapter_summaries[idx])
+    
+    # Construct the synthesis input
+    input_json: SynthesisInput = {
+        "narrative_plan": narrative_plan,                        # Complete plan for context
+        "current_beat_index": beat_index,                       # Which beat we're working on
+        "current_beat_title": target_beat["section_title"],    # Title for easy reference
+        "current_beat_role": target_beat["section_role"],     # Role for reference
+        "source_chapter_texts": relevant_chapter_texts,          # The chapters to synthesize
+    }
+        
+    return input_json
