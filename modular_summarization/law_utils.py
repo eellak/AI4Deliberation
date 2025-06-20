@@ -26,6 +26,7 @@ __all__ = [
     "contains_skopos",
     "contains_antikeimeno",
     "detect_scope_and_objective",
+    "get_polished_text",
     "is_skopos_article",
     "is_antikeimeno_article",
     "get_summary",
@@ -285,7 +286,7 @@ def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Generic single-field summary JSON helper (Stage 2 & 3)
+# Generic single-field summary JSON helpers (Stage 2, 3 & polishing)
 # ---------------------------------------------------------------------------
 
 def get_summary(raw: str) -> Optional[str]:  # noqa: D401
@@ -318,6 +319,27 @@ def get_summary(raw: str) -> Optional[str]:  # noqa: D401
         return summary.strip()
     return None
 
+
+
+
+def get_polished_text(raw: str) -> Optional[str]:  # noqa: D401
+    """Return the `polished_text` value from a JSON string produced by the polishing prompt.
+
+    The LLM is expected to return JSON of the form ``{"polished_text": "..."}``.
+    Handles Markdown fences and extraneous text similarly to :pyfunc:`get_summary`.
+    """
+    cleaned = _strip_code_fence(raw)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(data, dict):
+        return None
+    txt = data.get("polished_text")
+    if isinstance(txt, str) and txt.strip():
+        return txt.strip()
+    return None
 
 # ---------------------------------------------------------------------------
 # Scope & Objective detectors (Σκοπός / Αντικείμενο)
