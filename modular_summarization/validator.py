@@ -85,13 +85,8 @@ def validate_narrative_plan(plan: _JSON, allowed_keys: Sequence[str]) -> List[st
         normalised_chapters: List[str] = []
         for ch in sec["source_chapters"]:
             if isinstance(ch, int):
-                normalised = f"kefalaio_{ch}"
-                normalised_chapters.append(normalised)
-                _log.warning(
-                    "Normalised numeric chapter index %s to '%s' (section %s)",
-                    ch,
-                    normalised,
-                    idx,
+                errors.append(
+                    f"Section {idx} has numeric chapter reference {ch}; πρέπει να χρησιμοποιήσεις μορφή 'kefalaio_N'"
                 )
             elif isinstance(ch, str):
                 normalised_chapters.append(ch)
@@ -103,9 +98,18 @@ def validate_narrative_plan(plan: _JSON, allowed_keys: Sequence[str]) -> List[st
         # Check against allowed keys -------------------------------------
         unknown = [k for k in normalised_chapters if k not in allowed_keys]
         if unknown:
-            errors.append(
-                f"Section {idx} references unknown chapter keys: {unknown}"
-            )
+            if len(unknown) == len(normalised_chapters):
+                # Every reference invalid – real error
+                errors.append(
+                    f"Section {idx} references only unknown chapter keys: {unknown}"
+                )
+            else:
+                # Partial mismatch – keep valid ones but log warning
+                _log.warning(
+                    "Section %s has some unknown chapter keys that will be ignored: %s",
+                    idx,
+                    unknown,
+                )
 
     return errors
 

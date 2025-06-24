@@ -200,6 +200,21 @@ def plan_narrative(
     min_beats = max(2, n_chapters // 3) if n_chapters > 1 else 1
     max_beats = n_chapters
 
+    # ------------------------------------------------------------------
+    # Dynamically enlarge schema limits so they match chapter count
+    # ------------------------------------------------------------------
+    try:
+        from .schemas import NARRATIVE_PLAN_SCHEMA
+        sc_prop = (
+            NARRATIVE_PLAN_SCHEMA["properties"]["narrative_sections"]["items"]["properties"][
+                "source_chapters"
+            ]
+        )
+        # Allow as many chapter refs as there are chapters in the part.
+        sc_prop["maxItems"] = n_chapters
+    except Exception as _exc:
+        _log.debug("Could not patch schema maxItems dynamically: %s", _exc)
+
     # Token budget ------------------------------------------------------------
     if max_tokens is None:
         total_input_text = " ".join(list(chapter_summaries.values()) if isinstance(chapter_summaries, dict) else chapter_summaries)
@@ -216,7 +231,7 @@ def plan_narrative(
         # Compose dynamic placeholder values
         allowed_keys_descriptive = list(input_data["περιλήψεις_κεφαλαίων"].keys())
         allowed_keys_csv = ", ".join(allowed_keys_descriptive)
-        allowed_range = f"0–{n_chapters - 1}"
+        allowed_range = f"kefalaio_0–kefalaio_{n_chapters - 1}"
         prompt_filled = template_raw.format(
             min_beats=min_beats,
             max_beats=max_beats,
@@ -359,6 +374,7 @@ def synthesize_paragraph(
     beat_index: int,
     generator_fn: LLMGeneratorFn,
     max_tokens: Optional[int] = None,
+    previous_paragraphs: Optional[List[str]] = None,
 ) -> str:
     """Generate a single paragraph for one story beat.
     
@@ -383,7 +399,12 @@ def synthesize_paragraph(
     # -------------------------------------------------------------------
     # Prepare input data for synthesis
     # -------------------------------------------------------------------
-    input_data = construct_stage3_synth_input(narrative_plan, chapter_summaries, beat_index)
+    input_data = construct_stage3_synth_input(
+        narrative_plan,
+        chapter_summaries,
+        beat_index,
+        previous_paragraphs=previous_paragraphs,
+    )
     input_json_str = json.dumps(input_data, ensure_ascii=False, indent=2)
     
     # Calculate token budget if not specified
@@ -417,18 +438,20 @@ def synthesize_paragraph(
     prompt = prompt_template + "\n\n**Δεδομένα Εισόδου:**\n" + input_json_str
     
     # Call the LLM
-    _log.info(f"Synthesizing paragraph for beat {beat_index} (max_tokens={max_tokens})")
+    _log.info(
+        f"Synthesizing paragraph for beat {beat_index} (max_tokens={max_tokens}) | prev_pars={len(previous_paragraphs or [])}"
+    )
     response = generator_fn(prompt, max_tokens)
     
-    # Parse the response (expected to be JSON with "paragraph" key)
+    # Parse the response (expected to be JSON with "current_section_text" key)
     try:
         json_str = extract_json_from_text(response)
         result = json.loads(json_str)
         
-        if not isinstance(result, dict) or "paragraph" not in result:
-            raise ValueError("Response missing 'paragraph' key")
+        if not isinstance(result, dict) or "current_section_text" not in result:
+            raise ValueError("Response missing 'current_section_text' key")
         
-        paragraph: str = result["paragraph"]
+        paragraph: str = result["current_section_text"]
         return paragraph
     except (json.JSONDecodeError, ValueError) as e:
         _log.warning(f"Failed to parse JSON paragraph, using raw text: {e}")
@@ -534,12 +557,17 @@ def generate_part_summary(
         max_tokens=planning_budget
     )
     
+    # Enrich plan with runtime synthesis tracking fields
+    for sec in narrative_plan.get("narrative_sections", []):
+        sec.setdefault("section_text", "")
+        sec.setdefault("status", "upcoming")
+    
     # Step 2: Generate paragraphs for each story beat
     num_beats = len(narrative_plan["narrative_sections"])
     paragraphs = []
     
-    # Allocate synthesis budget evenly across beats, with minimum 600 tokens per beat
-    per_beat_budget = max(synthesis_budget_total // num_beats if num_beats > 0 else 0, 600)
+    # Allocate synthesis budget evenly across beats, with minimum 800 tokens per beat
+    per_beat_budget = max(synthesis_budget_total // num_beats if num_beats > 0 else 0, 800)
     
     # If the per-beat budget exceeds what we have, adjust total budget
     if per_beat_budget * num_beats > synthesis_budget_total:
@@ -547,13 +575,25 @@ def generate_part_summary(
         synthesis_budget_total = per_beat_budget * num_beats
     
     for beat_idx in range(num_beats):
+        # Update statuses before generation
+        for idx2, _sec in enumerate(narrative_plan["narrative_sections"]):
+            _sec["status"] = (
+                "completed" if idx2 < beat_idx else "current" if idx2 == beat_idx else "upcoming"
+            )
+
         paragraph = synthesize_paragraph(
             narrative_plan,
             chapter_summaries,
             beat_idx,
             generator_fn,
-            max_tokens=per_beat_budget
+            max_tokens=per_beat_budget,
+            previous_paragraphs=paragraphs,
         )
+
+        # Store paragraph and mark beat as completed
+        narrative_plan["narrative_sections"][beat_idx]["section_text"] = paragraph
+        narrative_plan["narrative_sections"][beat_idx]["status"] = "completed"
+
         paragraphs.append(paragraph)
     
     # Step 3: Join paragraphs with newlines

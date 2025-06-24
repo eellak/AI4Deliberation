@@ -5,7 +5,13 @@ from typing import Tuple, Dict
 from .config import TARGET_COMPRESSION_RATIO, MAX_CONTEXT_TOKENS
 import math
 
-__all__ = ["length_metrics", "desired_tokens", "should_split", "summarization_budget"]
+__all__ = [
+    "length_metrics",
+    "desired_tokens",
+    "should_split",
+    "summarization_budget",
+    "dynamic_budget",
+]
 
 # --- Heuristics & constants ---------------------------------------------------
 _TOKEN_PER_WORD = 0.75  # rough heuristic for *input* text length metrics
@@ -72,4 +78,38 @@ def summarization_budget(
         "target_words": target_words,
         "target_sentences": target_sentences,
         "token_limit": token_limit,
+    }
+
+# -----------------------------------------------------------------------------
+# New public helper ------------------------------------------------------------
+# -----------------------------------------------------------------------------
+
+def dynamic_budget(
+    text: str,
+    *,
+    ratio: float = 0.12,
+    variance: float = 0.2,
+) -> Dict[str, int]:
+    """Return dynamic budgeting dict used by Stage-3/4.
+
+    Parameters
+    ----------
+    text : str
+        Full source text to be summarised.
+    ratio : float, optional
+        Target compression ratio (default 0.12 ⇒ 12 % of original words).
+    variance : float, optional
+        Allowed ± variance around the target (default 0.2 = ±20 %).
+
+    Returns
+    -------
+    dict with ``min_words``, ``max_words``, ``token_limit`` suitable for prompt
+    formatting.
+    """
+    base = summarization_budget(text, compression_ratio=ratio)
+    tgt = base["target_words"]
+    return {
+        "min_words": int(tgt * (1 - variance)),
+        "max_words": int(tgt * (1 + variance)),
+        "token_limit": base["token_limit"],
     }

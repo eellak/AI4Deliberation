@@ -64,9 +64,14 @@ try:
             LAW_NEW_SCHEMA,
             CHAPTER_SUMMARY_SCHEMA,
             PART_SUMMARY_SCHEMA,
+            POLISHED_SUMMARY_SCHEMA,
+            CITIZEN_POLISH_SUMMARY_SCHEMA,
             NARRATIVE_PLAN_SCHEMA,
             NARRATIVE_SECTION_SCHEMA,
+            DRAFT_PARAGRAPHS_SCHEMA,
+            STYLISTIC_CRITIQUE_SCHEMA,
         )  # noqa: F401
+
         from .lmfe_utils import build_prefix_fn  # noqa: F401
         _LMFE_AVAILABLE = True
     else:
@@ -151,7 +156,7 @@ def _stub_generator(prompt: str, max_tokens: int) -> str:  # noqa: D401
             ensure_ascii=False,
         )
     elif "[SCHEMA:NARRATIVE_SECTION]" in prompt:
-        return json.dumps({"paragraph": "stub paragraph"}, ensure_ascii=False)
+        return json.dumps({"current_section_text": "stub section"}, ensure_ascii=False)
     else:
         # Default stub for Stage-2/3 prompts: simple summary wrapper
         return json.dumps({"summary": "stub"}, ensure_ascii=False)
@@ -205,8 +210,12 @@ def _build_real_generator() -> Callable[[str, int], str]:
             "LAW_NEW": LAW_NEW_SCHEMA,
             "CHAPTER_SUM": CHAPTER_SUMMARY_SCHEMA,
             "PART_SUM": PART_SUMMARY_SCHEMA,
+            "POLISHED_SUMMARY": POLISHED_SUMMARY_SCHEMA,
+            "CITIZEN_POLISH_SUMMARY": CITIZEN_POLISH_SUMMARY_SCHEMA,
             "NARRATIVE_PLAN": NARRATIVE_PLAN_SCHEMA,
             "NARRATIVE_SECTION": NARRATIVE_SECTION_SCHEMA,
+            "DRAFT_PARAGRAPHS": DRAFT_PARAGRAPHS_SCHEMA,
+            "STYLISTIC_CRITIQUE": STYLISTIC_CRITIQUE_SCHEMA,
         }
 
         def _gemma_generate_lmfe(prompt: str, max_tokens: int) -> str:  # type: ignore[override]

@@ -14,7 +14,7 @@ TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
 # ---------------------------------------------------------------------------
 MAX_TOKENS_STAGE1: int = 400   # per-article summary
 MAX_TOKENS_STAGE2: int = 400   # per-chapter / cohesive summary
-MAX_TOKENS_STAGE3: int = 800   # per-part exposition
+MAX_TOKENS_STAGE3: int = 1600   # per-part exposition
 MAX_TOKENS_FINAL:  int = 2_000  # final exposition
 
 # ---------------------------------------------------------------------------

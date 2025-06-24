@@ -178,7 +178,8 @@ def construct_stage3_plan_input(
     if isinstance(chapter_summaries, dict):
         mapping = chapter_summaries
     else:
-        mapping = {f"kefalaio_{i}": txt for i, txt in enumerate(chapter_summaries)}
+        # Enumerate chapters starting from 0 for full consistency
+        mapping = {f"kefalaio_{i}": txt for i, txt in enumerate(chapter_summaries, start=0)}
 
     payload: PlanningInput = {"περιλήψεις_κεφαλαίων": mapping}
 
@@ -194,6 +195,7 @@ def construct_stage3_synth_input(
     narrative_plan: NarrativePlan,
     chapter_summaries: Union[List[str], Dict[str, str]],
     beat_index: int,
+    previous_paragraphs: Optional[List[str]] = None,
 ) -> SynthesisInput:
     sections = narrative_plan.get("narrative_sections", [])
     if not isinstance(sections, list) or beat_index >= len(sections):
@@ -223,4 +225,5 @@ def construct_stage3_synth_input(
         "current_beat_title": target.get("section_title"),
         "current_beat_role": target.get("section_role"),
         "source_chapter_texts": texts,
+        "previous_paragraphs": previous_paragraphs or [],
     }

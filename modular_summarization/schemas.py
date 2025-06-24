@@ -89,6 +89,73 @@ PART_SUMMARY_SCHEMA = {
 }
 
 # ---------------------------------------------------------------------------
+# Polished summary schema (legacy)
+# ---------------------------------------------------------------------------
+POLISHED_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "polished_text": {"type": "string", "maxLength": 2800},
+    },
+    "required": ["polished_text"],
+}
+
+# ---------------------------------------------------------------------------
+# New single-stage citizen polish schema
+# ---------------------------------------------------------------------------
+CITIZEN_POLISH_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "explanation": {"type": "string", "maxLength": 1200},
+        "plan": {"type": "string", "maxLength": 1500},
+        "summary_text": {"type": "string", "maxLength": 3000},
+    },
+    "required": ["explanation", "plan", "summary_text"],
+}
+# ---------------------------------------------------------------------------
+# New Stage-3/4 Draft & Polishing Schemas
+# ---------------------------------------------------------------------------
+DRAFT_PARAGRAPHS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "draft_paragraphs": {
+            "type": "array",
+            "maxItems": 25,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "paragraph_index": {"type": "integer", "minimum": 0},
+                    "text": {"type": "string", "maxLength": 700},
+                },
+                "required": ["paragraph_index", "text"],
+            },
+        }
+    },
+    "required": ["draft_paragraphs"],
+}
+
+STYLISTIC_CRITIQUE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "suggested_edits": {
+            "type": "array",
+            "maxItems": 15,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "original_phrase": {"type": "string", "maxLength": 120},
+                    "issue": {"type": "string", "maxLength": 60},
+                    "suggestion": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": 120},
+                    },
+                },
+                "required": ["original_phrase", "issue", "suggestion"],
+            },
+        }
+    },
+    "required": ["suggested_edits"],
+}
+# ---------------------------------------------------------------------------
 # Stage-3 Expanded: Narrative Planning Schemas
 # ---------------------------------------------------------------------------
 NARRATIVE_PLAN_SCHEMA = {
@@ -106,7 +173,7 @@ NARRATIVE_PLAN_SCHEMA = {
                     "section_role": {"type": "string", "maxLength": 250},
                     "source_chapters": {
                         "type": "array",
-                        "items": {"type": "integer", "minimum": 0},
+                        "items": {"type": "string", "pattern": "kefalaio_[0-9]+"},
                         "minItems": 1,
                         "maxItems": 10,
                     },
@@ -123,9 +190,9 @@ NARRATIVE_PLAN_SCHEMA = {
 NARRATIVE_SECTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "paragraph": {"type": "string", "maxLength": 800},
+        "current_section_text": {"type": "string", "maxLength": 800},
     },
-    "required": ["paragraph"],
+    "required": ["current_section_text"],
 }
 
 __all__ = [
@@ -133,6 +200,9 @@ __all__ = [
     "LAW_NEW_SCHEMA",
     "CHAPTER_SUMMARY_SCHEMA",
     "PART_SUMMARY_SCHEMA",
+    "POLISHED_SUMMARY_SCHEMA",
     "NARRATIVE_PLAN_SCHEMA",
     "NARRATIVE_SECTION_SCHEMA",
+    "DRAFT_PARAGRAPHS_SCHEMA",
+    "STYLISTIC_CRITIQUE_SCHEMA",
 ] 
