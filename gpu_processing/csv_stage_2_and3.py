@@ -66,7 +66,7 @@ def greek_numeral_sort_key(label: str) -> Tuple[int, str]:
 # ---------------------------------------------------------------------------
 # Ensure project root on PYTHONPATH so `modular_summarization` imports resolve
 # ---------------------------------------------------------------------------
-ROOT_DIR = Path("/home/ubuntu/AI4Deliberation")
+ROOT_DIR = Path(__file__).resolve().parents[1]
 import sys  # stdlib; placed here to avoid circular
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))

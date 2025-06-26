@@ -34,7 +34,9 @@ from typing import Iterable, List, Tuple
 # ---------------------------------------------------------------------------
 # Ensure project root available on PYTHONPATH
 # ---------------------------------------------------------------------------
-ROOT_DIR = Path("/home/ubuntu/AI4Deliberation")
+# Resolve repository root as the *parent* directory that contains this script
+ROOT_DIR = Path(__file__).resolve().parents[1]  # e.g. .../AI4Deliberation
+
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
@@ -132,7 +134,7 @@ def process_consultation(
     # Hierarchy – first try full BillHierarchy from section parser titles
     part_map: dict[int, Tuple[str, str, str]] = {}
     try:
-        sys.path.insert(0, "/home/ubuntu/AI4Deliberation")
+        sys.path.insert(0, str(ROOT_DIR))
         import section_parser.section_parser as sp  # type: ignore
 
         title_rows = sp.parse_titles(db_path, consultation_id)  # type: ignore[arg-type]
@@ -268,9 +270,24 @@ def process_consultation(
         # Combine Stage‑1 results
         combined: List[tuple[int, str, dict]] = []
         for item in result.get("law_modifications", []):
-            combined.append((item["article_id"], "modifies", item))
+            parsed_field = item.get("parsed")
+            if isinstance(parsed_field, list):
+                # multiple modifications – replicate item per entry
+                for sub in parsed_field:
+                    dup = item.copy()
+                    dup["parsed"] = sub
+                    combined.append((item["article_id"], "modifies", dup))
+            else:
+                combined.append((item["article_id"], "modifies", item))
         for item in result.get("law_new_provisions", []):
-            combined.append((item["article_id"], "new_provision", item))
+            parsed_field = item.get("parsed")
+            if isinstance(parsed_field, list):
+                for sub in parsed_field:
+                    dup = item.copy()
+                    dup["parsed"] = sub
+                    combined.append((item["article_id"], "new_provision", dup))
+            else:
+                combined.append((item["article_id"], "new_provision", item))
 
         log.debug("Writing %d law_mod/new_provision rows", len(combined))
         for art_id, decision, item in sorted(combined, key=lambda t: t[0]):
