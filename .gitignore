@@ -1,2 +1,6 @@
 *.db
-*.csv 
+*.csv
+*.env
+# Ignore specific .env in topic_modeling
+/topic_modeling/.env
+/__pycache__/ 
