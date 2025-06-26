@@ -16,7 +16,7 @@ from typing import List, Dict, Any
 os.environ['TORCHDYNAMO_DISABLE'] = '1'
 
 # --- Dynamically add article_parser_utils to path and import ---
-ARTICLE_PARSER_UTILS_PATH = "/mnt/data/AI4Deliberation/article_extraction_analysis"
+ARTICLE_PARSER_UTILS_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'utils'))
 if ARTICLE_PARSER_UTILS_PATH not in sys.path:
     sys.path.append(ARTICLE_PARSER_UTILS_PATH)
 import article_parser_utils

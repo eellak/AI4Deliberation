@@ -8,6 +8,13 @@ from typing import List, Dict, Any
 
 # Import original helpers if available
 try:
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    utils_dir = os.path.join(project_root, "utils")
+    if utils_dir not in sys.path:
+        sys.path.insert(0, utils_dir)
     import article_parser_utils as _apu
 except ImportError:  # when running outside original repo
     _apu = None  # type: ignore

@@ -11,7 +11,10 @@ from importlib import import_module, util as _import_util, machinery as _import_
 try:
     _section_mod = import_module("section_parser.section_parser")
 except ModuleNotFoundError:
-    _path = "/mnt/data/AI4Deliberation/section_parser/section_parser.py"
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    _path = os.path.join(project_root, "section_parser", "section_parser.py")
     spec = _import_util.spec_from_file_location("_section_parser_fallback", _path)
     _section_mod = _import_util.module_from_spec(spec)  # type: ignore
     loader: _import_mach.SourceFileLoader = spec.loader  # type: ignore

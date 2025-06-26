@@ -17,7 +17,7 @@ os.environ['TORCHDYNAMO_DISABLE'] = '1'
 # --- Dynamically add article_parser_utils to path and import ---
 # Add the parent directory of article_extraction_analysis to sys.path
 # to allow importing article_parser_utils
-ARTICLE_PARSER_UTILS_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'new_html_extraction', 'article_extraction_analysis'))
+ARTICLE_PARSER_UTILS_PATH = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'utils'))
 if ARTICLE_PARSER_UTILS_PATH not in sys.path:
     sys.path.append(ARTICLE_PARSER_UTILS_PATH)
 import article_parser_utils # Now this should work at module level

@@ -126,16 +126,21 @@ def _levenshtein_le1(a: str, b: str) -> bool:
 # Load word-based Greek ordinal mapping (πρώτο, δεύτερο, …) from
 # article_parser_utils so we don't duplicate the huge dictionary here.
 try:
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir)
+    utils_path = os.path.join(project_root, "utils", "article_parser_utils.py")
+    
     _utils_spec = importlib.util.spec_from_file_location(
         "article_parser_utils",
-        "/mnt/data/AI4Deliberation/article_extraction_analysis/article_parser_utils.py",
+        utils_path,
     )
     _utils_mod = importlib.util.module_from_spec(_utils_spec)  # type: ignore
     _utils_spec.loader.exec_module(_utils_mod)  # type: ignore
     WORD_ORDINALS = {strip_accents(k): v for k, v in getattr(_utils_mod, "GREEK_NUMERALS_ORDINAL").items()}
-except Exception:
+except Exception as e:
     WORD_ORDINALS = {}
-    print("Warning: could not import article_parser_utils -> word ordinals not loaded", file=sys.stderr)
+    print(f"Warning: could not import article_parser_utils -> word ordinals not loaded: {e}", file=sys.stderr)
 
 _word_pattern = "|".join(re.escape(k) for k in sorted(WORD_ORDINALS.keys(), key=len, reverse=True)) if WORD_ORDINALS else ""
 # Build a single body pattern that matches EITHER a Greek numeral letter (1–3 chars)
