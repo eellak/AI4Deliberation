@@ -4,10 +4,32 @@ Adjust values here to fine-tune token limits, compression ratios, etc.
 from datetime import datetime
 
 # ---------------------------------------------------------------------------
+# GENERATION PARAMETERS
+# ---------------------------------------------------------------------------
+# Primary temperature used for the first call. A near-greedy 0.01 keeps output
+# deterministic while still technically enabling sampling (required by HF when
+# ``do_sample=True``).
+INITIAL_TEMPERATURE: float = 0.01
+# Temperature to use on validation retries when the first attempt fails
+# JSON-schema checks.  A slightly higher value often helps the model explore
+# alternative completions that satisfy the schema.
+RETRY_TEMPERATURE: float = 0.2
+# Mutable value read by the generator.  *validator.generate_with_validation*
+# mutates this at runtime before each attempt so that the underlying
+# ``llm`` wrapper always uses the correct temperature without changing its
+# signature.
+CURRENT_TEMPERATURE: float = INITIAL_TEMPERATURE
+
+# nucleus sampling (top-p) settings -----------------------------------------
+INITIAL_TOP_P: float = 0.95  # near-greedy for first pass
+RETRY_TOP_P: float = 0.9     # slightly wider for retries
+CURRENT_TOP_P: float = INITIAL_TOP_P
+
+# ---------------------------------------------------------------------------
 # MODEL & DEVICE
 # ---------------------------------------------------------------------------
 DEFAULT_MODEL_ID: str = "google/gemma-3-12b-it"  # <-- change if needed
-TORCH_DTYPE = "float32"  # string to avoid hard torch import here
+TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
 
 # ---------------------------------------------------------------------------
 # TOKEN BUDGETS PER STAGE (rough defaults – override via kwargs)
@@ -44,7 +66,7 @@ CONTENT_COLUMN: str = "content"
 # ---------------------------------------------------------------------------
 # REASONING TRACE SETTINGS
 # ---------------------------------------------------------------------------
-ENABLE_REASONING_TRACE: bool = False  # toggled by CLI or env var
+ENABLE_REASONING_TRACE: bool = True  # toggled by CLI or env var
 TRACE_OUTPUT_DIR: str = "traces"
 TRACE_FILENAME_TEMPLATE: str = "reasoning_trace_c{consultation_id}_{timestamp}.log"
 
@@ -59,6 +81,12 @@ __all__ = [
     "MIN_WORDS_FOR_SUMMARY",
     "MAX_CONTEXT_TOKENS",
     "PUNCTUATION_ENDINGS",
+    "INITIAL_TEMPERATURE",
+    "RETRY_TEMPERATURE",
+    "CURRENT_TEMPERATURE",
+    "INITIAL_TOP_P",
+    "RETRY_TOP_P",
+    "CURRENT_TOP_P",
     "RUN_TIMESTAMP",
     "DB_PATH",
     "TABLE_NAME",

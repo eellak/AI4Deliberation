@@ -1,5 +1,5 @@
 # Core LLM & inference stack
-transformers==4.50.0
+transformers==4.38.2
 torch==2.3.0
 
 # flash-attn optional – compile later
@@ -22,6 +22,9 @@ pyarrow==19.0.1
 
 # Progress bars (used in cleaning/utility scripts)
 tqdm==4.67.1
+
+# ORM
+sqlalchemy==2.0.25
 
 # Testing
 pytest==8.3.5

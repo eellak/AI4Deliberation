@@ -182,10 +182,12 @@ def _build_real_generator() -> Callable[[str, int], str]:
         inputs = tok(prompt, return_tensors="pt").to(model.device)  # type: ignore[arg-type]
         input_len = inputs["input_ids"].shape[1]
         output_ids = model.generate(
-            **inputs,
-            max_new_tokens=max_tokens,
-            do_sample=False,
-        )
+             **inputs,
+             max_new_tokens=max_tokens,
+             do_sample=(cfg.CURRENT_TOP_P < 1.0 or cfg.CURRENT_TEMPERATURE > 0),
+             top_p=cfg.CURRENT_TOP_P,
+             temperature=cfg.CURRENT_TEMPERATURE,
+         )
         gen_only = output_ids[0][input_len:]
         if len(gen_only) == 0:
             gen_only = output_ids[0]
@@ -239,8 +241,9 @@ def _build_real_generator() -> Callable[[str, int], str]:
             output_ids = model.generate(
                 **inputs,
                 max_new_tokens=max_tokens,
-                do_sample=False,
-                temperature=0.0,
+                do_sample=True,
+                temperature=cfg.CURRENT_TEMPERATURE,
+                top_p=cfg.CURRENT_TOP_P,
                 prefix_allowed_tokens_fn=pfx_fn,
             )
             gen_only = output_ids[0][input_len:]

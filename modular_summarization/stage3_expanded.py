@@ -527,9 +527,13 @@ def generate_part_summary(
         if intro_lines:
             total_input_text += " ".join(intro_lines)
         
-        # Use the overall budget helper with 0.6 compression ratio
-        # Note: summarization_budget expects text input, not word count
-        budget_info = summarization_budget(total_input_text, compression_ratio=0.6)
+        from . import config as cfg  # local import to avoid cycles
+        # Use the overall budget helper with 0.6 compression ratio and enforce minimum
+        budget_info = summarization_budget(
+            total_input_text,
+            compression_ratio=0.6,
+            min_token_limit=cfg.MAX_TOKENS_STAGE3,
+        )
         max_tokens_total = budget_info['token_limit']
         _log.debug(f"Calculated total budget: {max_tokens_total} tokens from {len(total_input_text)} chars input")
     

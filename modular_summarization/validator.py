@@ -115,6 +115,58 @@ def validate_narrative_plan(plan: _JSON, allowed_keys: Sequence[str]) -> List[st
 
 
 # ---------------------------------------------------------------------------
+# Generic JSON-schema validator helpers
+# ---------------------------------------------------------------------------
+
+try:
+    import jsonschema  # type: ignore
+except ImportError:  # pragma: no cover
+    jsonschema = None  # handled at runtime
+
+
+def validate_schema(data, schema):
+    """Return list[str] of validation errors (empty if valid)."""
+    if jsonschema is None:
+        return []  # skip if library not present (should not happen in prod)
+    try:
+        jsonschema.validate(data, schema)
+        return []
+    except jsonschema.ValidationError as e:  # type: ignore[attr-defined]
+        return [e.message]
+
+
+# ---------------------------------------------------------------------------
+# Law-specific JSON validators --------------------------------------------------
+from . import schemas as _schemas
+from .law_utils import parse_law_mod_json, parse_law_new_json
+
+
+def validate_law_mod_output(text: str) -> list[str]:
+    """Return errors if *text* does not conform to LAW_MOD_SCHEMA (or list)."""
+    objs = parse_law_mod_json(text)
+    if objs is None:
+        return ["not_valid_json"]
+    errors: list[str] = []
+    for idx, obj in enumerate(objs):
+        errs = validate_schema(obj, _schemas.LAW_MOD_SCHEMA)
+        if errs:
+            errors.append(f"item_{idx}:{'|'.join(errs)}")
+    return errors
+
+
+def validate_law_new_output(text: str) -> list[str]:
+    """Return errors if *text* does not conform to LAW_NEW_SCHEMA (or list)."""
+    objs = parse_law_new_json(text)
+    if objs is None:
+        return ["not_valid_json"]
+    errors: list[str] = []
+    for idx, obj in enumerate(objs):
+        errs = validate_schema(obj, _schemas.LAW_NEW_SCHEMA)
+        if errs:
+            errors.append(f"item_{idx}:{'|'.join(errs)}")
+    return errors
+
+# ---------------------------------------------------------------------------
 # Retry wrapper
 # ---------------------------------------------------------------------------
 
@@ -126,13 +178,32 @@ def generate_with_validation(
     validator_args: Tuple[Any, ...] = (),
     max_retries: int = 2,
 ):
-    """Call *gen_fn* with *prompt* until *validator_fn* returns no errors.
+    """Call *gen_fn* with *prompt* and JSON-schema validation.
 
-    Returns tuple *(output:str, retries:int).*  Raises *ValueError* if all tries
-    fail.
+    Behaviour changes (2025-06-26):
+    1. *Temperature control*: first attempt uses ``cfg.INITIAL_TEMPERATURE`` (0.01).
+    2. *Sampling parameters per attempt*: first attempt uses ``cfg.INITIAL_TOP_P`` (0.95), subsequent attempts use ``cfg.RETRY_TOP_P`` (0.9)
+    3. *Skip non-schema prompts*: if the *prompt* does **not** contain a
+       ``[SCHEMA:`` tag we execute **one** generation (no retries) because there
+       is nothing to validate against.
+    4. Maximum of *max_retries* attempts (default 2 = 1 primary + 1 retry).
+
+    Returns ``(output:str, retries:int)`` where *retries* is the number of extra
+    attempts performed after the first call.
     """
+    from . import config as cfg  # local import to avoid cycles during tests
+
+    # Fast path – plain-text prompt, no validation possible ------------------
+    if "[SCHEMA:" not in prompt:
+        cfg.CURRENT_TEMPERATURE = cfg.INITIAL_TEMPERATURE
+        return gen_fn(prompt, max_tokens), 0
+
     last_errs: List[str] | None = None
     for attempt in range(max_retries + 1):
+        # Sampling parameters per attempt -----------------------------------
+        is_first = attempt == 0
+        cfg.CURRENT_TEMPERATURE = cfg.INITIAL_TEMPERATURE if is_first else cfg.RETRY_TEMPERATURE
+        cfg.CURRENT_TOP_P = cfg.INITIAL_TOP_P if is_first else cfg.RETRY_TOP_P
         out = gen_fn(prompt, max_tokens)
         errs = validator_fn(out, *validator_args) if callable(validator_fn) else []
         if not errs:

@@ -225,7 +225,7 @@ def _strip_code_fence(raw: str) -> str:
     return _extract_json_candidate(txt)
 
 
-def parse_law_mod_json(raw: str) -> Optional[Dict[str, str]]:
+def parse_law_mod_json(raw: str) -> Optional[list[dict[str, str]]]:
     """Attempt to load JSON returned by the LLM prompt.
 
     Handles common wrapping such as Markdown code fences or triple backticks.
@@ -233,56 +233,72 @@ def parse_law_mod_json(raw: str) -> Optional[Dict[str, str]]:
     """
     cleaned = _strip_code_fence(raw)
     try:
-        data = json.loads(cleaned)
+        loaded = json.loads(cleaned)
     except json.JSONDecodeError:
+        return None
+
+    # Allow either single object or list of objects ---------------------------------
+    if isinstance(loaded, dict):
+        objs = [loaded]
+    elif isinstance(loaded, list):
+        objs = [obj for obj in loaded if isinstance(obj, dict)]  # keep only dict entries
+    else:
         return None
 
     allowed_keys = {"law_reference", "article_number", "change_type", "major_change_summary", "key_themes"}
     required = {"law_reference", "article_number", "change_type", "major_change_summary"}
 
-    # Reject unknown keys early
-    if set(data.keys()) - allowed_keys:
-        return None
+    valid: list[dict[str, str]] = []
+    for obj in objs:
+        # Reject unknown keys
+        if set(obj.keys()) - allowed_keys:
+            continue
+        if not required.issubset(obj.keys()):
+            continue
+        # Validate key_themes
+        if "key_themes" in obj and not isinstance(obj["key_themes"], list):
+            continue
 
-    if not required.issubset(data.keys()):
-        return None
+        obj.setdefault("key_themes", [])
+        obj["key_themes"] = [str(x).strip() for x in obj["key_themes"][:3]]
+        valid.append({k: obj[k] for k in allowed_keys if k in obj})
 
-    # Validate key_themes type if present
-    if "key_themes" in data and not isinstance(data["key_themes"], list):
-        return None
-
-    data.setdefault("key_themes", [])
-    data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]
-
-    return {k: data.get(k) for k in allowed_keys if k in data}
+    return valid or None
 
 
-def parse_law_new_json(raw: str) -> Optional[Dict[str, Any]]:
+def parse_law_new_json(raw: str) -> Optional[list[dict[str, Any]]]:
     """Validate JSON from LAW_NEW_JSON_PROMPT.
 
     Expected keys: article_title, provision_type, core_provision_summary, key_themes (list).
     """
     cleaned = _strip_code_fence(raw)
     try:
-        data = json.loads(cleaned)
+        loaded = json.loads(cleaned)
     except json.JSONDecodeError:
+        return None
+
+    if isinstance(loaded, dict):
+        objs = [loaded]
+    elif isinstance(loaded, list):
+        objs = [o for o in loaded if isinstance(o, dict)]
+    else:
         return None
 
     allowed = {"article_title", "provision_type", "core_provision_summary", "key_themes"}
     required = allowed
 
-    # unknown keys -> invalid
-    if set(data.keys()) - allowed:
-        return None
+    valid: list[dict[str, Any]] = []
+    for obj in objs:
+        if set(obj.keys()) - allowed:
+            continue
+        if not required.issubset(obj.keys()):
+            continue
+        if not isinstance(obj.get("key_themes"), list):
+            continue
+        obj["key_themes"] = [str(x).strip() for x in obj["key_themes"][:3]]
+        valid.append({k: obj[k] for k in allowed})
 
-    if not required.issubset(data.keys()):
-        return None
-
-    if not isinstance(data["key_themes"], list):
-        return None
-
-    data["key_themes"] = [str(x).strip() for x in data["key_themes"][:3]]
-    return {k: data[k] for k in allowed}
+    return valid or None
 
 
 # ---------------------------------------------------------------------------

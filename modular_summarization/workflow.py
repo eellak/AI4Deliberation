@@ -17,7 +17,8 @@ from .advanced_parser import get_article_chunks
 from .hierarchy_parser import BillHierarchy
 from .compression import summarization_budget, length_metrics
 from .prompts import get_prompt
-from .retry import generate_with_retry
+from .retry import generate_with_retry  # legacy summarization
+from .validator import generate_with_validation, validate_law_mod_output, validate_law_new_output
 from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
 from modular_summarization.llm import get_generator
 from .trace import ReasoningTracer, TraceEntry
@@ -219,7 +220,11 @@ def run_workflow(
         if words < 80:
             stage1_results.append(ch["content"])
         else:
-            budget = summarization_budget(ch["content"], compression_ratio=0.10)
+            budget = summarization_budget(
+                ch["content"],
+                compression_ratio=0.10,
+                min_token_limit=cfg.MAX_TOKENS_STAGE1,
+            )
             prompt = get_prompt("stage1_article").format(**budget) + "\n" + ch["content"]
             res = generate_with_retry(_gen_fn, prompt, budget["token_limit"], max_retries=1)
             stage1_results.append(res.text)
@@ -227,9 +232,20 @@ def run_workflow(
         # Binary classifier path
         if article_modifies_law(ch["content"]):
             mod_prompt = "[SCHEMA:LAW_MOD]\n" + get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
-            mod_res = generate_with_retry(_gen_fn, mod_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
 
-            parsed = parse_law_mod_json(mod_res.text)
+            # Dynamic classifier token cap ---------------------------------
+            tokens_in, *_ = length_metrics(ch["content"])
+            mod_token_limit = min(1024, int(tokens_in * 1.2) + 128)
+
+            mod_res_text, mod_retries = generate_with_validation(
+                mod_prompt,
+                mod_token_limit,
+                _gen_fn,
+                validate_law_mod_output,
+                max_retries=2,
+            )
+
+            parsed = parse_law_mod_json(mod_res_text)
             
             # Log to trace if enabled
             if tracer:
@@ -240,22 +256,32 @@ def run_workflow(
                     prompt=mod_prompt,
                     raw_output=mod_res.text,
                     parsed_output=parsed,
-                    metadata={"retries": mod_res.retries}
+                    metadata={"retries": mod_retries}
                 ))
 
             law_mod_results.append({
                 "article_id": ch.get("db_id"),
                 "article_number": ch.get("article_number"),
-                "llm_output": mod_res.text,
+                "llm_output": mod_res_text,
                 "parsed": parsed,
                 "prompt": mod_prompt,
-                "retries": mod_res.retries,
+                "retries": mod_retries,
             })
         else:
             # New provisions JSON extraction
             new_prompt = "[SCHEMA:LAW_NEW]\n" + get_prompt("law_new_json") + "\n" + ch["content"]
-            new_res = generate_with_retry(_gen_fn, new_prompt, CLASSIFIER_TOKEN_LIMIT, max_retries=0)
-            parsed_new = parse_law_new_json(new_res.text)
+
+            tokens_in, *_ = length_metrics(ch["content"])
+            new_token_limit = min(1024, int(tokens_in * 1.2) + 128)
+
+            new_res_text, new_retries = generate_with_validation(
+                new_prompt,
+                new_token_limit,
+                _gen_fn,
+                validate_law_new_output,
+                max_retries=2,
+            )
+            parsed_new = parse_law_new_json(new_res_text)
             
             # Log to trace if enabled
             if tracer:
@@ -266,16 +292,16 @@ def run_workflow(
                     prompt=new_prompt,
                     raw_output=new_res.text,
                     parsed_output=parsed_new,
-                    metadata={"retries": new_res.retries}
+                    metadata={"retries": new_retries}
                 ))
 
             law_new_results.append({
                 "article_id": ch.get("db_id"),
                 "article_number": ch.get("article_number"),
-                "llm_output": new_res.text,
+                "llm_output": new_res_text,
                 "parsed": parsed_new,
                 "prompt": new_prompt,
-                "retries": new_res.retries,
+                "retries": new_retries,
             })
 
     # TODO: pipeline Stage 2 & 3 (placeholder)

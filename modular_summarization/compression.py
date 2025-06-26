@@ -50,6 +50,7 @@ def summarization_budget(
     avg_words_per_sentence: int = AVG_WORDS_PER_SENTENCE,
     tokens_per_word: float = TOKENS_PER_WORD_GEN,
     overshoot: float = OVERSHOOT_RATIO,
+    min_token_limit: int | None = None,
 ) -> Dict[str, int]:
     """Return budgeting dict for summarisation.
 
@@ -74,6 +75,10 @@ def summarization_budget(
     target_words = max(1, math.floor(words * compression_ratio))
     target_sentences = max(1, round(target_words / avg_words_per_sentence))
     token_limit = int(math.ceil(target_words * tokens_per_word * overshoot))
+
+    # Enforce stage-level floor if provided ---------------------------------
+    if min_token_limit is not None and token_limit < int(min_token_limit):
+        token_limit = int(min_token_limit)
     return {
         "target_words": target_words,
         "target_sentences": target_sentences,
