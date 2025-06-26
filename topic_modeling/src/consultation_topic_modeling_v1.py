@@ -1,9 +1,33 @@
+# ---------------------------------------------------------------------------
+# consultation_topic_modeling_v1.py
+# ---------------------------------------------------------------------------
+# Baseline topic-modeling pipeline for Greek public-consultation comments.
+# Steps:
+#   1. Fetch raw comments (+ optional articles) from the database.
+#   2. Clean & lemmatise text, build dynamic stop-word list.
+#   3. Train BERTopic with multilingual embeddings.
+#   4. Choose representative comments per topic & save CSV.
+#   5. Generate a concise Greek title + short explanation for each topic
+#      with a locally-run Gemma-3-4B-it model.
+#   6. Persist everything under outputs/v1/<consultation_id>/
+#
+# Quick usage (GPU recommended for Gemma):
+#   python consultation_topic_modeling_v1.py \
+#          --consultation_id 320 \
+#          --db_url postgresql://user:pass@host/dbname \
+#          --gemma_path /path/to/gemma-3-4b-it
+# Add --help for the full list of arguments.
+# ---------------------------------------------------------------------------
+
+#python topic_modeling/consultation_topic_modeling.py --use_gemma
+
 import argparse
 import os
 from pathlib import Path
 from collections import Counter
 import unicodedata as ud
 import re
+import json
 
 import pandas as pd
 import sqlalchemy
@@ -16,6 +40,18 @@ import spacy
 from bertopic import BERTopic
 from bertopic.representation import KeyBERTInspired, MaximalMarginalRelevance
 from bertopic.vectorizers import ClassTfidfTransformer
+
+# Optional grammar checker
+try:
+    import language_tool_python  # type: ignore
+except ImportError:
+    language_tool_python = None  # type: ignore
+
+# ---------------------------------------------------------------------------
+# Output folders
+# ---------------------------------------------------------------------------
+OUTPUT_ROOT = (Path(__file__).resolve().parent.parent / "outputs").resolve()
+VERSION_TAG = "v1"
 
 # ---------------------------------------------------------------------------
 # UTILITIES
@@ -59,56 +95,15 @@ def clean_comment(
 
 
 def build_stopwords(common_words: list[str]) -> list[str]:
-    base = [
-        "η",
-        "οποια",
-        "τι",
-        "του",
-        "σε",
-        "που",
-        "οι",
-        "με",
-        "στα",
-        "στο",
-        "στην",
-        "στιν",
-        "μας",
-        "να",
-        "κυριε",
-        "κύριε",
-        "της",
-        "για",
-        "αυτο",
-        "απο",
-        "των",
-        "αυτοι",
-        "μεσω",
-        "τις",
-        "την",
-        "τη",
-        "το",
-        "και",
-        "πως",
-        "αλλα",
-        "ειναι",
-        "δεν",
-        "στη",
-        "αν",
-        "μονο",
-        "μια",
-        "ενα",
-        "ενας",
-        "οσο",
-        "αλλος",
-        "περιπτωση",
-        "παραλληλα",
-        "παραλληλου",
-        "παραλληλος",
-        "νομος",
-        "ειμαι",
-    ]
-    # merge + deduplicate
-    return list(set(base + common_words))
+    """Combine corpus-derived frequent words with project-wide Greek stop-word list."""
+    from pathlib import Path
+
+    stop_file = Path(__file__).resolve().parent.parent / "stopwords_el.txt"
+    manual: list[str] = []
+    if stop_file.exists():
+        manual = [w.strip() for w in stop_file.read_text(encoding="utf-8").splitlines() if w.strip()]
+
+    return list(set(manual + common_words))
 
 
 # ---------------------------------------------------------------------------
@@ -200,16 +195,40 @@ def generate_titles_with_gemma(rep_df: pd.DataFrame, gemma_root: str, device: st
     ).eval()
     tokenizer = AutoProcessor.from_pretrained(gemma_root)
 
-    PROMPT_TXT = (
-        "Είσαι αξιολογητής θεματικής συνάφειας σε δημόσιες διαβουλεύσεις.\n"
-        "Θα σου δίνονται τα δέκα πιο αντιπροσωπευτικά σχόλια χρηστών και λέξεις-κλειδιά που συνοψίζουν το περιεχόμενό του για μια συγκεκριμένη διαβούλευση. \n"
-        "Οδηγίες:\n"
-        "Να διαβάσεις προσεκτικά όλα τα σχόλια μαζί με τις αντίστοιχες λέξεις-κλειδιά.\n"
-        "Να εντοπίσεις το βασικό θέμα ή θεματική ενότητα στην οποία εντάσσονται. τα σχόλια συνολικά.\n"
-        "Να δώσεις έναν σύντομο, αντιπροσωπευτικό και περιγραφικό τίτλο για τη θεματική αυτή (π.χ. \"οργανωτικά και Υπηρεσιακά Θέματα Πυροσβεστικού Σώματος και Πολιτικής Προστασίας\").\n"
-        "Παρουσίασε ως έξοδο μόνο:\n"
-        "Τον τίτλο της θεματικής\n"
-        "Μια σύντομη εξήγηση για την επιλογή του τίτλου"
+    # ---------------------------------------------------------------------------
+    # LanguageTool init
+    # ---------------------------------------------------------------------------
+    LT_TOOL = None
+    if 'language_tool_python' in globals() and language_tool_python is not None:
+        try:
+            LT_TOOL = language_tool_python.LanguageTool("el")
+        except Exception:
+            LT_TOOL = None
+
+    def _spell_correct(txt: str) -> str:
+        if LT_TOOL is None:
+            return txt
+        try:
+            matches = LT_TOOL.check(txt)
+            return language_tool_python.utils.correct(txt, matches)  # type: ignore
+        except Exception:
+            return txt
+
+    # ---------------------------------------------------------------------------
+    # Output folders defined earlier (OUTPUT_ROOT, VERSION_TAG)
+    # ---------------------------------------------------------------------------
+
+    # ---------------------------------------------------------------------------
+    # JSON prompt
+    # ---------------------------------------------------------------------------
+    JSON_PROMPT = (
+        "Είσαι αξιολογητής θεματικών σε δημόσιες διαβουλεύσεις.\n"
+        "Διάβασε προσεκτικά τα σχόλια και τις λέξεις-κλειδιά.\n"
+        "Παρήγαγε ΜΟΝΟ ΚΑΘΑΡΟ JSON (χωρίς ```json``` ή άλλο κείμενο).\n"
+        "Σχήμα: {{\"title\": \"<έως 12 λέξεις>\", \"explanation\": \"<1-2 προτάσεις>\"}}.\n"
+        "Παράδειγμα:\n"
+        "{{\"title\": \"Ενίσχυση εθελοντών πυροσβεστών\", \"explanation\": \"Τα σχόλια επισημαίνουν ανάγκη για εκπαίδευση και θεσμικό πλαίσιο\"}}\n"
+        "===== ΣΧΟΛΙΑ =====\n{comments}\n\nΛέξεις-κλειδιά: {keywords}\n===== ΤΕΛΟΣ ====="
     )
 
     outputs = []
@@ -221,55 +240,60 @@ def generate_titles_with_gemma(rep_df: pd.DataFrame, gemma_root: str, device: st
         comments_block = "\n".join([f"{i}. \"{c}\"" for i, c in enumerate(group["content"].tolist()[:10])])
         keywords = group["Representation"].iloc[0]
 
-        user_prompt = f"{comments_block}\nΛέξεις-κλειδιά: {keywords}\n\n{PROMPT_TXT}"
+        user_prompt = JSON_PROMPT.format(comments=comments_block, keywords=keywords)
 
         # Gemma3Processor expects the prompt under the 'text' keyword.
         inputs = tokenizer(text=user_prompt, return_tensors="pt").to(model.device)
         input_len = inputs["input_ids"].shape[1]
-        out_ids = model.generate(**inputs, max_new_tokens=120, do_sample=False)
-        gen_text = tokenizer.decode(out_ids[0][input_len:], skip_special_tokens=True)
+
+        def _run_generation(do_sample: bool) -> str:
+            out_ids = model.generate(
+                **inputs,
+                max_new_tokens=120,
+                do_sample=do_sample,
+                temperature=0.7 if do_sample else 1.0,
+            )
+            return tokenizer.decode(out_ids[0][input_len:], skip_special_tokens=True)
+
+        # First attempt: deterministic generation
+        gen_text = _run_generation(do_sample=False).strip()
+
+        # If Gemma unexpectedly returns empty output, retry with sampling
+        if not gen_text:
+            gen_text = _run_generation(do_sample=True).strip()
+
+        # As a last fallback derive title from keywords
+        if not gen_text:
+            if isinstance(keywords, list):
+                primary_kw = keywords[0] if keywords else f"Θέμα {topic_id}"
+            else:
+                primary_kw = str(keywords).split(",")[0].strip() if keywords else f"Θέμα {topic_id}"
+            data = {"title": primary_kw.title(), "explanation": ""}
+            outputs.append({"Topic": topic_id, "Title": _spell_correct(data["title"]), "Explanation": "", "Raw": ""})
+            continue
 
         # ------------------------------
-        # Robust post-processing
+        # parse JSON output
         # ------------------------------
-        clean_text = gen_text.strip()
+        # strip fences if any
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", gen_text, flags=re.DOTALL)
+        if m:
+            gen_text = m.group(1)
 
-        # 1) Try to capture after the explicit label «Τίτλος:»
-        title = ""
-        explanation = ""
+        try:
+            data = json.loads(gen_text)
+        except json.JSONDecodeError:
+            title_match = re.search(r"\"title\"\s*:\s*\"([^\"]+)\"", gen_text)
+            expl_match = re.search(r"\"explanation\"\s*:\s*\"([^\"]+)\"", gen_text)
+            data = {
+                "title": title_match.group(1) if title_match else gen_text[:60],
+                "explanation": expl_match.group(1) if expl_match else "",
+            }
 
-        title_match = re.search(r"Τίτλος\s*:\s*(.+)", clean_text, re.IGNORECASE)
-        if title_match:
-            title = title_match.group(1).split("\n")[0].strip(" .-*_")
+        title_out = _spell_correct(data.get("title", "").strip())
+        expl_out = _spell_correct(data.get("explanation", "").strip())
 
-        # 2) Fallback: first non-empty line that is not merely punctuation or a
-        # placeholder like "(1-2 προτάσεις)"
-        if not title:
-            for line in clean_text.split("\n"):
-                stripped = line.strip()
-                if not stripped:
-                    continue
-                # ignore pure punctuation / dot lines or short parenthetical notes
-                if re.fullmatch(r"[.()\-–\s]+", stripped):
-                    continue
-                if re.fullmatch(r"\(.*?προτάσεις.*?\)", stripped, flags=re.IGNORECASE):
-                    continue
-                title = stripped.strip(" .-*_")
-                break
-
-        if not title:
-            title = clean_text[:60]
-
-        # Extract explanation section if present
-        expl_match = re.search(r"Εξήγηση\s*:\s*(.+)", clean_text, re.IGNORECASE | re.DOTALL)
-        if expl_match:
-            explanation = expl_match.group(1).strip()
-        else:
-            # Fallback: everything after first line used as title
-            parts = [l.strip() for l in clean_text.split("\n") if l.strip()]
-            explanation = " ".join(parts[1:]) if len(parts) > 1 else ""
-
-        outputs.append({"Topic": topic_id, "Title": title, "Explanation": explanation, "Raw": gen_text})
+        outputs.append({"Topic": topic_id, "Title": title_out, "Explanation": expl_out, "Raw": gen_text})
 
     return pd.DataFrame(outputs)
 
@@ -284,18 +308,26 @@ def main():
     )
     parser.add_argument("--db_url", help="SQLAlchemy-style DB URL (else reads DB_URL env var or db_secret.db)")
     parser.add_argument("--consultation_id", type=int, default=320, help="Consultation ID to analyse")
-    default_out = Path(__file__).parent / "topic_model_outputs"
-    parser.add_argument("--out_dir", default=str(default_out), help="Where to store CSV files")
+    parser.add_argument("--output_root", type=Path, default=OUTPUT_ROOT, help="Root folder for outputs (default topic_modeling/outputs)")
     parser.add_argument("--min_topic_size", type=int, default=10)
-    parser.add_argument("--use_gemma", action="store_true", help="Generate topic titles with Gemma (GPU heavy)")
     parser.add_argument("--prob_threshold", type=float, default=0.8, help="Min. probability for representative comments")
     parser.add_argument("--max_comments_per_topic", type=int, default=10, help="Limit of comments kept per topic when building representative set")
     parser.add_argument("--exclude_topics", default="1", help="Comma-separated list of topic IDs to skip when building representative comments")
     GEMMA_PATH = "/home/glossapi/.cache/huggingface/hub/models--google--gemma-3-4b-it"
     args = parser.parse_args()
 
-    out = Path(args.out_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    # ------------------------------------------------------------
+    # Structured output folders
+    # ------------------------------------------------------------
+    base_out: Path = args.output_root / VERSION_TAG / str(args.consultation_id)
+    raw_dir = base_out / "raw"
+    cluster_dir = base_out / "clustering"
+    reps_dir = base_out / "reps"
+    titles_dir = base_out / "titles"
+    evaluation_dir = base_out / "evaluation"
+
+    for d in (raw_dir, cluster_dir, reps_dir, titles_dir, evaluation_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
     # 1. DB ------------------------------------------------------------
     engine = get_engine(args.db_url)
@@ -325,7 +357,7 @@ def main():
     comments_df.drop_duplicates(subset=["content_clean"], inplace=True)
 
     # Save cleaned data
-    cleaned_csv = out / "cleaned.csv"
+    cleaned_csv = raw_dir / "cleaned.csv"
     comments_df.to_csv(cleaned_csv, index=False)
     print(f"Saved cleaned comments to {cleaned_csv}")
 
@@ -339,7 +371,7 @@ def main():
     doc_info["content_clean"] = doc_info["Document"]
     merged = pd.merge(comments_df, doc_info, on="content_clean")
 
-    topics_csv = out / "topics.csv"
+    topics_csv = cluster_dir / "topics.csv"
     merged.to_csv(topics_csv, index=False)
     print(f"First stage topics saved to {topics_csv}")
 
@@ -369,17 +401,20 @@ def main():
     ]
     rep_comments = rep_comments.drop(columns=[c for c in cols_to_drop if c in rep_comments.columns])
 
-    rep_csv = out / "representative_comments.csv"
+    rep_csv = reps_dir / "representative_comments.csv"
     rep_comments.to_csv(rep_csv, index=False)
     print(f"Representative comments saved to {rep_csv}")
 
-    # 5. Optionally generate Gemma titles ---------------------------------
-    if args.use_gemma:
-        print("\nGenerating titles with Gemma … this may take a while.")
-        titles_df = generate_titles_with_gemma(rep_comments, gemma_root=GEMMA_PATH)
-        titles_csv = out / "topics_llm.csv"
-        titles_df.to_csv(titles_csv, index=False)
-        print(f"Gemma titles saved to {titles_csv}")
+    # 5. Generate Gemma titles (mandatory) ---------------------------------
+    print("\nGenerating titles with Gemma … this may take a while.")
+    titles_df = generate_titles_with_gemma(rep_comments, gemma_root=GEMMA_PATH)
+    titles_jsonl = titles_dir / "topics_llm_v1.jsonl"
+    with titles_jsonl.open("w", encoding="utf-8") as fh:
+        for _, row in titles_df.iterrows():
+            fh.write(json.dumps(row.to_dict(), ensure_ascii=False) + "\n")
+    print(f"Gemma titles saved to {titles_jsonl}")
+
+    print(f"[success] Outputs saved under {base_out}")
 
 
 if __name__ == "__main__":
