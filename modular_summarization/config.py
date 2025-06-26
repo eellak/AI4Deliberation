@@ -6,14 +6,14 @@ from datetime import datetime
 # ---------------------------------------------------------------------------
 # MODEL & DEVICE
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL_ID: str = "google/gemma-4b-it"  # <-- change if needed
-TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
+DEFAULT_MODEL_ID: str = "google/gemma-3-12b-it"  # <-- change if needed
+TORCH_DTYPE = "float32"  # string to avoid hard torch import here
 
 # ---------------------------------------------------------------------------
 # TOKEN BUDGETS PER STAGE (rough defaults – override via kwargs)
 # ---------------------------------------------------------------------------
-MAX_TOKENS_STAGE1: int = 400   # per-article summary
-MAX_TOKENS_STAGE2: int = 400   # per-chapter / cohesive summary
+MAX_TOKENS_STAGE1: int = 1200   # per-article summary
+MAX_TOKENS_STAGE2: int = 1200   # per-chapter / cohesive summary
 MAX_TOKENS_STAGE3: int = 1600   # per-part exposition
 MAX_TOKENS_FINAL:  int = 2_000  # final exposition
 
@@ -36,7 +36,7 @@ PUNCTUATION_ENDINGS: tuple[str, ...] = (".", "?", "!", "…", ".”", "?")
 RUN_TIMESTAMP: str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
 
 # Default SQLite columns – update if schema differs
-DB_PATH: str = "/mnt/data/AI4Deliberation/deliberation_data_gr_MIGRATED_FRESH_20250602170747.db"
+DB_PATH: str = "/home/ubuntu/deliberation_data_gr_MIGRATED_FRESH_20250602170747.db"
 TABLE_NAME: str = "articles"
 TITLE_COLUMN: str = "title"
 CONTENT_COLUMN: str = "content"

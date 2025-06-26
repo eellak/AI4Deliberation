@@ -10,6 +10,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Callable
 import logging
+from . import config as cfg
 import os
 import json
 import re
@@ -20,7 +21,7 @@ logger = logging.getLogger(__name__)
 # Disable TorchDynamo/Inductor graph compilation to avoid recompile limits in generation loops
 os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
 
-MODEL_ID = "google/gemma-3-4b-it"
+MODEL_ID = cfg.DEFAULT_MODEL_ID
 
 try:
     import torch  # noqa: F401
@@ -95,7 +96,7 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
             model = Gemma3ForConditionalGeneration.from_pretrained(
                 MODEL_ID,
                 device_map="auto",
-                torch_dtype=getattr(torch, "bfloat16", torch.float32),
+                torch_dtype=getattr(torch, cfg.TORCH_DTYPE, torch.float32),
             ).eval()
             processor = AutoProcessor.from_pretrained(MODEL_ID)
         else:
@@ -103,9 +104,10 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
             model = AutoModelForCausalLM.from_pretrained(
                 MODEL_ID,
                 device_map="auto",
-                torch_dtype=getattr(torch, "bfloat16", torch.float32),
+                torch_dtype=getattr(torch, cfg.TORCH_DTYPE, torch.float32),
+                trust_remote_code=True,
             ).eval()
-            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+            tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
             # build simple processor-like wrapper for compatibility
             class _TokWrapper:  # noqa: D401
                 def __init__(self, tok):
