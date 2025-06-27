@@ -92,11 +92,17 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
         return None, None
     try:
         logger.info("Loading model: %s", MODEL_ID)
+        try:
+            import importlib.util as _ilu
+            _EXTRA_ATTN = {"attn_implementation": "flash_attention_2"} if _ilu.find_spec("flash_attn") else {}
+        except Exception:
+            _EXTRA_ATTN = {}
         if Gemma3ForConditionalGeneration is not None and _GEMMA_CLASS_AVAILABLE:
             model = Gemma3ForConditionalGeneration.from_pretrained(
                 MODEL_ID,
                 device_map="auto",
                 torch_dtype=getattr(torch, cfg.TORCH_DTYPE, torch.float32),
+                **_EXTRA_ATTN,
             ).eval()
             processor = AutoProcessor.from_pretrained(MODEL_ID)
         else:
@@ -105,6 +111,7 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
                 MODEL_ID,
                 device_map="auto",
                 torch_dtype=getattr(torch, cfg.TORCH_DTYPE, torch.float32),
+                **_EXTRA_ATTN,
                 trust_remote_code=True,
             ).eval()
             tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
@@ -121,6 +128,14 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
 
             processor = _TokWrapper(tokenizer)
 
+        try:
+            import torch as _torch
+            if hasattr(_torch, "compile"):
+                model = _torch.compile(model, mode="reduce-overhead")
+                logger.info("torch.compile applied with reduce-overhead mode")
+        except Exception as _compile_exc:
+            logger.warning("torch.compile failed or unavailable: %s", _compile_exc)
+
         logger.info("Model loaded successfully (%s parameters).", getattr(model, "num_parameters", lambda: "?")())
         return model, processor
     except Exception as exc:  # pragma: no cover – runtime failures (GPU, etc.)
@@ -129,6 +144,7 @@ def _load_model_and_processor():  # noqa: D401 – simple helper
 
 
 def _stub_generator(prompt: str, max_tokens: int) -> str:  # noqa: D401
+    """Return deterministic placeholder JSON; attribute IS_STUB=True for external checks."""
     """Return deterministic minimal JSON depending on prompt type for tests/dry-run."""
     if "[SCHEMA:LAW_MOD]" in prompt:
         return json.dumps(
@@ -163,6 +179,7 @@ def _stub_generator(prompt: str, max_tokens: int) -> str:  # noqa: D401
         # Default stub for Stage-2/3 prompts: simple summary wrapper
         return json.dumps({"summary": "stub"}, ensure_ascii=False)
 
+_stub_generator.IS_STUB = True  # type: ignore[attr-defined]
 
 def _build_real_generator() -> Callable[[str, int], str]:
     model, processor = _load_model_and_processor()

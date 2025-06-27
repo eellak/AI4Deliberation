@@ -250,7 +250,7 @@ def plan_narrative(
     # -----------------------------------------------------------------------
     # Call the LLM with validation + retry -----------------------------------
     # -----------------------------------------------------------------------
-    from .validator import generate_with_validation, validate_narrative_plan
+    from .validator import generate_json_with_validation, validate_narrative_plan, ValidationError
 
     # Allow both descriptive keys (e.g. "kefalaio_0") **and** bare numeric indices
     allowed_keys: List[Union[str, int]] = list(input_data["περιλήψεις_κεφαλαίων"].keys())
@@ -270,7 +270,7 @@ def plan_narrative(
     _log.info(f"Generating narrative plan with validation (max_tokens={max_tokens})")
 
     try:
-        response, retries = generate_with_validation(
+        response, retries = generate_json_with_validation(
             prompt,
             max_tokens,
             generator_fn,
@@ -278,9 +278,13 @@ def plan_narrative(
             validator_args=(allowed_keys,),
             max_retries=2,
         )
-        _log.debug(f"Narrative plan generated after {retries} retries")
+        _log.debug("Narrative plan generated after %d retries", retries)
+    except ValidationError as exc:
+        _log.warning("ValidationError during narrative plan. Salvaging last output and continuing.")
+        response = exc.last_output or ""
+        retries = 2
     except Exception as e:
-        _log.error(f"Failed to generate validated narrative plan: {e}")
+        _log.error("Failed to generate validated narrative plan: %s", e)
         raise
 
     # Parse validated response ------------------------------------------------
@@ -441,7 +445,14 @@ def synthesize_paragraph(
     _log.info(
         f"Synthesizing paragraph for beat {beat_index} (max_tokens={max_tokens}) | prev_pars={len(previous_paragraphs or [])}"
     )
-    response = generator_fn(prompt, max_tokens)
+    from .validator import generate_json_with_validation, validate_narrative_section_output
+    response, retries = generate_json_with_validation(
+        prompt,
+        max_tokens,
+        generator_fn,
+        validate_narrative_section_output,
+        max_retries=2,
+    )
     
     # Parse the response (expected to be JSON with "current_section_text" key)
     try:
@@ -474,7 +485,14 @@ def summarize_single_chapter(
 ) -> str:
     """Fast-track summarization for Parts with a single Chapter."""
     prompt = get_prompt("stage3_single_chapter") + "\n\n**Κείμενο Κεφαλαίου:**\n" + chapter_text
-    resp = generator_fn(prompt, max_tokens)
+    from .validator import generate_json_with_validation, validate_chapter_summary_output
+    resp, _ = generate_json_with_validation(
+        prompt,
+        max_tokens,
+        generator_fn,
+        validate_chapter_summary_output,
+        max_retries=2,
+    )
     try:
         json_str = extract_json_from_text(resp)
         obj = json.loads(json_str)

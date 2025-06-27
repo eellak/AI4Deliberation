@@ -269,9 +269,7 @@ LAW_NEW_JSON_PROMPT = (
 # Used in: retry.py for handling truncated outputs
 # ===========================================================================
 
-CONCISE_CONTINUATION_PROMPT = (
-    "Η απάντησή σας διακόπηκε. Ολοκληρώστε άμεσα την τελευταία πρόταση με ελάχιστες λέξεις:"
-)
+
 
 # ===========================================================================
 # LEGACY/UNUSED PROMPTS (kept for backward compatibility)
@@ -401,7 +399,7 @@ PROMPTS: Dict[str, str] = {
     "law_new_json": LAW_NEW_JSON_PROMPT,
     
     # Error handling (actively used)
-    "concise_continuation": CONCISE_CONTINUATION_PROMPT,
+
     
     # Legacy/unused prompts (kept for backward compatibility)
     "stage2_cohesive": STAGE2_COHESIVE_PROMPT,

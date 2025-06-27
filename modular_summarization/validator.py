@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Sequence, Set, Tuple
 import logging
+from pathlib import Path
+from datetime import datetime
 
 _log = logging.getLogger(__name__)
 
@@ -167,6 +169,83 @@ def validate_law_new_output(text: str) -> list[str]:
     return errors
 
 # ---------------------------------------------------------------------------
+# Simple single-field & section validators (Stage-2 / Stage-3)
+# ---------------------------------------------------------------------------
+from . import schemas as _schemas
+
+
+def _validate_simple(text: str, schema) -> list[str]:
+    """Load JSON (via extract_json) and validate against *schema*. Returns error list."""
+    try:
+        obj = extract_json(text)
+    except ValueError:
+        return ["not_valid_json"]
+    return validate_schema(obj, schema)
+
+
+def validate_chapter_summary_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.CHAPTER_SUMMARY_SCHEMA)
+
+
+def validate_part_summary_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.PART_SUMMARY_SCHEMA)
+
+
+def validate_narrative_section_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.NARRATIVE_SECTION_SCHEMA)
+
+
+def validate_polished_summary_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.POLISHED_SUMMARY_SCHEMA)
+
+
+def validate_stylistic_critique_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.STYLISTIC_CRITIQUE_SCHEMA)
+
+
+def validate_draft_paragraphs_output(text: str) -> list[str]:
+    return _validate_simple(text, _schemas.DRAFT_PARAGRAPHS_SCHEMA)
+
+
+# ---------------------------------------------------------------------------
+# Plain-text summarization helper (Stage-1)
+# ---------------------------------------------------------------------------
+_PUNCTUATION_ENDINGS = (".", "…", "…", "!", "?", ";", "»", "\"")
+
+def is_truncated_text(text: str) -> bool:
+    """Heuristic to detect incomplete LLM output (no sentence-ending punctuation)."""
+    stripped = (text or "").rstrip()
+    if not stripped:
+        return True
+    return not any(stripped.endswith(tok) for tok in _PUNCTUATION_ENDINGS)
+
+
+def generate_plain_with_retry(
+    prompt: str,
+    max_tokens: int,
+    gen_fn,
+    *,
+    max_retries: int = 1,
+):
+    """Retry wrapper for *plain-text* prompts (no JSON/schema).
+
+    1. Fresh-restart retries – never sends continuation prompts.
+    2. Only increases temperature on retry (uses config.RETRY_TEMPERATURE).
+    3. Returns ``(output, retries, truncated)``.
+    """
+    from . import config as cfg
+
+    last_out: str = ""
+    for attempt in range(max_retries + 1):
+        cfg.CURRENT_TEMPERATURE = cfg.INITIAL_TEMPERATURE if attempt == 0 else cfg.RETRY_TEMPERATURE
+        out = gen_fn(prompt, max_tokens)
+        if not is_truncated_text(out):
+            return out, attempt, False
+        last_out = out
+    # Exhausted retries – return last output flagged as truncated
+    return last_out, max_retries, True
+
+# ---------------------------------------------------------------------------
 # Retry wrapper
 # ---------------------------------------------------------------------------
 
@@ -199,6 +278,7 @@ def generate_with_validation(
         return gen_fn(prompt, max_tokens), 0
 
     last_errs: List[str] | None = None
+    dump_dir = Path("invalid_json")
     for attempt in range(max_retries + 1):
         # Sampling parameters per attempt -----------------------------------
         is_first = attempt == 0
@@ -209,4 +289,70 @@ def generate_with_validation(
         if not errs:
             return out, attempt
         last_errs = errs
-    raise ValueError("Validation failed after retries: " + "; ".join(last_errs or []))
+    raise ValidationError(
+        "Validation failed after retries: " + "; ".join(last_errs or []),
+        last_output=last_out if 'last_out' in locals() else out,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Exception for validation failures that keeps last model output
+# ---------------------------------------------------------------------------
+class ValidationError(ValueError):
+    """Raised when *generate_json_with_validation* exhausts retries.
+
+    Attributes
+    ----------
+    last_output : str
+        The raw LLM output of the final attempt (useful for logging / salvage).
+    """
+
+    def __init__(self, message: str, *, last_output: str):
+        super().__init__(message)
+        self.last_output = last_output
+
+# ---------------------------------------------------------------------------
+# New helper – strict JSON validation with fresh-restart retries (Section C)
+# ---------------------------------------------------------------------------
+
+def generate_json_with_validation(
+    prompt: str,
+    max_tokens: int,
+    gen_fn,
+    validator_fn,
+    validator_args: tuple[Any, ...] = (),
+    max_retries: int = 2,
+):
+    """Generate strictly-validated JSON output.
+
+    Differences from *generate_with_validation*:
+    1. Assumes *prompt* already contains an LM-Format-Enforcer schema tag ("[SCHEMA:") – no fast path.
+    2. Retries **fresh** with *exactly* the same prompt instead of continuation heuristics.
+    3. Uses temperature=0.15 and top_p=0.9 on retries (per refactor TODO).
+    4. Returns ``(output:str, retries:int)``.
+    """
+    from . import config as cfg  # local import to avoid circular deps
+
+    last_errs: list[str] | None = None
+    dump_dir = Path("invalid_json")
+    last_out: str = ""
+    for attempt in range(max_retries + 1):
+        is_first = attempt == 0
+        # Sampling params ----------------------------------------------------
+        if is_first:
+            cfg.CURRENT_TEMPERATURE = cfg.INITIAL_TEMPERATURE
+        else:
+            cfg.CURRENT_TEMPERATURE = cfg.RETRY_TEMPERATURE  # only temperature increases
+        # Keep top_p constant to focus on temperature exploration
+
+        out = gen_fn(prompt, max_tokens)
+        last_out = out
+        errs = validator_fn(out, *validator_args) if callable(validator_fn) else []
+        if not errs:
+            return out, attempt
+        last_errs = errs
+
+    raise ValidationError(
+        "Validation failed after retries: " + "; ".join(last_errs or []),
+        last_output=last_out if 'last_out' in locals() else out,
+    )

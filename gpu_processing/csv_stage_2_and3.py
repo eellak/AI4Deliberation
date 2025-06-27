@@ -81,7 +81,12 @@ from modular_summarization.stage23_helpers_v2 import (
     greek_numeral_sort_key,
 )
 from modular_summarization.stage3_expanded import generate_part_summary
-from modular_summarization.retry import generate_with_retry
+from modular_summarization.validator import (
+    generate_json_with_validation,
+    validate_chapter_summary_output,
+    ValidationError,
+)
+# from modular_summarization.retry import generate_with_retry  # legacy
 from modular_summarization.llm import get_generator
 from modular_summarization.logger_setup import init_logging
 from modular_summarization.prompts import get_prompt, CITIZEN_POLISH_PROMPT
@@ -401,7 +406,23 @@ def process_consultation(
                     prompt, tok_lim = build_chapter_prompt(bullets)
 
                     # Use retry logic *and* benefit from LMFE schema enforcement.
-                    gen_res = generate_with_retry(generator_fn, prompt, tok_lim, max_retries=2)
+                    try:
+                        gen_text, retries = generate_json_with_validation(
+                            prompt,
+                            tok_lim,
+                            generator_fn,
+                            validate_chapter_summary_output,
+                            max_retries=2,
+                        )
+                    except ValidationError as exc:
+                        LOGGER.warning("ValidationError on chapter %s/%s – salvaging last output", part, chap)
+                        gen_text = exc.last_output or ""
+                        retries = 2
+                    class _Result:  # mimic SimpleNamespace used elsewhere
+                        def __init__(self, text, retries):
+                            self.text = text
+                            self.retries = retries
+                    gen_res = _Result(gen_text, retries)
                     summary = parse_chapter_summary(gen_res.text) or ""
 
                     w2.writerow([

@@ -197,12 +197,12 @@ def _extract_json_candidate(raw: str) -> str:
     """Return probable JSON substring inside *raw* by finding outermost braces.
 
     Steps:
-    1. Remove Markdown fences if the entire block is fenced (handled separately).
-    2. Locate first "{" and last "}".  If both exist and are ordered, return that slice.
-       Otherwise return the original string unchanged.
-    3. Trim leading/trailing whitespace and zero-width chars.
+        1. Remove Markdown fences if the entire block is fenced (handled separately).
+        2. Locate first "{" and last "}".  If both exist and are ordered, return that slice.
+           Otherwise return the original string unchanged.
+        3. Trim leading/trailing whitespace and zero-width chars.
     """
-    cleaned = raw.strip().lstrip("\ufeff\u200b")  # strip BOM / ZWSP
+    cleaned = raw.strip().lstrip("\ufeff\u200b\u200e\u200f")  # strip BOM / ZWSP / LRM / RLM
 
     # Fast-path: if string already starts with { and ends with }
     if cleaned.startswith("{") and cleaned.rstrip().endswith("}"):
@@ -215,9 +215,30 @@ def _extract_json_candidate(raw: str) -> str:
     return cleaned
 
 
+# --- helper: smart quote normalisation ------------------------------------
+_SMART_QUOTES = {
+    "“": '"', "”": '"', "„": '"', "«": '"', "»": '"',
+    "‘": "'", "’": "'", "‚": "'",
+}
+
+def _norm_quotes(txt: str) -> str:
+    """Replace curly / typographic quotes with ASCII ones (best-effort)."""
+    for k, v in _SMART_QUOTES.items():
+        txt = txt.replace(k, v)
+    return txt
+
+
 def _strip_code_fence(raw: str) -> str:
     """Return content inside ```json fences if present, else unchanged."""
-    txt = raw.strip()
+    # remove BOM, zero-width space, and bidi marks anywhere in string
+    txt = (
+        raw.replace("\ufeff", "")
+            .replace("\u200b", "")
+            .replace("\u200e", "")  # LRM
+            .replace("\u200f", "")  # RLM
+            .strip()
+    )
+    txt = _norm_quotes(txt)
     m = _FENCE_RE.match(txt)
     if m:
         txt = m.group(1).strip()

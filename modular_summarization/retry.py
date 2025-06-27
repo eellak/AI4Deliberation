@@ -6,8 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from .config import TARGET_COMPRESSION_RATIO, PUNCTUATION_ENDINGS
-from .prompts import get_prompt
+from .config import PUNCTUATION_ENDINGS
 
 __all__ = ["LLMGenerationResult", "generate_with_retry"]
 
@@ -32,21 +31,22 @@ def generate_with_retry(
     max_tokens: int,
     max_retries: int = 2,
 ) -> LLMGenerationResult:
-    """Call `generator_fn` with continuation / shortening retry logic.
+    """Deprecated wrapper kept for backward compatibility.
+
+    Fresh-restart retries using *validator.generate_plain_with_retry* under the hood.
+    Continuation prompt logic has been removed."""
 
     Uses a simple truncation heuristic to decide if the model response is
     incomplete and, if so, asks the model to continue up to `max_retries`
     times.  This helper is generic and may be reused by other workflows that
     still need automatic continuation.
     """
-    retries = 0
-    while True:
-        output = generator_fn(prompt, max_tokens)
-        if not _is_truncated(output) or retries >= max_retries:
-            return LLMGenerationResult(text=output, truncated=_is_truncated(output), retries=retries)
+    from .validator import generate_plain_with_retry
 
-        # Build continuation prompt asking for a concise finish
-        continuation_prompt = f"{get_prompt('concise_continuation')}\n{output}"
-        max_tokens = int(max_tokens * (1 - TARGET_COMPRESSION_RATIO))
-        prompt = continuation_prompt
-        retries += 1
+    out_text, retries, trunc = generate_plain_with_retry(
+        prompt,
+        max_tokens,
+        generator_fn,
+        max_retries=max_retries,
+    )
+    return LLMGenerationResult(text=out_text, truncated=trunc, retries=retries)

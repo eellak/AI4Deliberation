@@ -17,8 +17,13 @@ from .advanced_parser import get_article_chunks
 from .hierarchy_parser import BillHierarchy
 from .compression import summarization_budget, length_metrics
 from .prompts import get_prompt
-from .retry import generate_with_retry  # legacy summarization
-from .validator import generate_with_validation, validate_law_mod_output, validate_law_new_output
+from .validator import generate_plain_with_retry
+from .validator import (
+    generate_json_with_validation,
+    validate_law_mod_output,
+    validate_law_new_output,
+    ValidationError,
+)
 from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
 from modular_summarization.llm import get_generator
 from .trace import ReasoningTracer, TraceEntry
@@ -233,8 +238,13 @@ def run_workflow(
                 min_token_limit=cfg.MAX_TOKENS_STAGE1,
             )
             prompt = get_prompt("stage1_article").format(**budget) + "\n" + ch["content"]
-            res = generate_with_retry(_gen_fn, prompt, budget["token_limit"], max_retries=1)
-            stage1_results.append(res.text)
+            out_text, plain_retries, _trunc = generate_plain_with_retry(
+                prompt,
+                budget["token_limit"],
+                _gen_fn,
+                max_retries=1,
+            )
+            stage1_results.append(out_text)
 
         # Binary classifier path
         if article_modifies_law(ch["content"]):
@@ -244,15 +254,19 @@ def run_workflow(
             tokens_in, *_ = length_metrics(ch["content"])
             mod_token_limit = min(1024, int(tokens_in * 1.2) + 128)
 
-            mod_res_text, mod_retries = generate_with_validation(
-                mod_prompt,
-                mod_token_limit,
-                _gen_fn,
-                validate_law_mod_output,
-                max_retries=2,
-            )
-
-            parsed = parse_law_mod_json(mod_res_text)
+            try:
+                mod_res_text, mod_retries = generate_json_with_validation(
+                    mod_prompt,
+                    mod_token_limit,
+                    _gen_fn,
+                    validate_law_mod_output,
+                    max_retries=2,
+                )
+                parsed = parse_law_mod_json(mod_res_text)
+            except ValidationError as exc:
+                mod_res_text = exc.last_output or ""
+                mod_retries = 2
+                parsed = None
             
             # Log to trace if enabled
             if tracer:
@@ -261,7 +275,7 @@ def run_workflow(
                     article_number=ch.get("article_number"),
                     classification="modifies",
                     prompt=mod_prompt,
-                    raw_output=mod_res.text,
+                    raw_output=mod_res_text,
                     parsed_output=parsed,
                     metadata={"retries": mod_retries}
                 ))
@@ -281,14 +295,19 @@ def run_workflow(
             tokens_in, *_ = length_metrics(ch["content"])
             new_token_limit = min(1024, int(tokens_in * 1.2) + 128)
 
-            new_res_text, new_retries = generate_with_validation(
-                new_prompt,
-                new_token_limit,
-                _gen_fn,
-                validate_law_new_output,
-                max_retries=2,
-            )
-            parsed_new = parse_law_new_json(new_res_text)
+            try:
+                new_res_text, new_retries = generate_json_with_validation(
+                    new_prompt,
+                    new_token_limit,
+                    _gen_fn,
+                    validate_law_new_output,
+                    max_retries=2,
+                )
+                parsed_new = parse_law_new_json(new_res_text)
+            except ValidationError as exc:
+                new_res_text = exc.last_output or ""
+                new_retries = 2
+                parsed_new = None
             
             # Log to trace if enabled
             if tracer:
@@ -297,7 +316,7 @@ def run_workflow(
                     article_number=ch.get("article_number"),
                     classification="new_provision",
                     prompt=new_prompt,
-                    raw_output=new_res.text,
+                    raw_output=new_res_text,
                     parsed_output=parsed_new,
                     metadata={"retries": new_retries}
                 ))

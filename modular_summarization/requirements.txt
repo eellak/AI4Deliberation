@@ -1,6 +1,6 @@
 # Core LLM & inference stack
-transformers==4.38.2
-torch==2.3.0
+transformers==4.53.0
+torch==2.3.1
 
 # flash-attn optional – compile later
 

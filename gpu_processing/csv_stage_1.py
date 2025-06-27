@@ -23,10 +23,8 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-import logging
-import re
-import sys
+from modular_summarization.validator import is_truncated_text
+import csv, json, logging, os, re, sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Tuple
@@ -79,19 +77,32 @@ LOGGER = logging.getLogger("generate_stage1_csvs")
 # ---------------------------------------------------------------------------
 
 def process_consultation(
-    consultation_id: int,
-    db_path: str,
-    output_dir: Path,
-    *,
-    use_real_model: bool = False,
-    article_id: int | None = None,
-    enable_trace: bool = False,
-) -> bool:
+     consultation_id: int,
+     db_path: str,
+     output_dir: Path,
+     *,
+     use_real_model: bool = False,
+     article_id: int | None = None,
+     enable_trace: bool = False,
+     resume: bool = False,
+    ) -> bool:
     """Run workflow for a single consultation and write its Stage 1 CSV.
 
     Returns ``True`` if workflow finished without raising and CSV written.
     """
     csv_path = output_dir / f"cons{consultation_id}_stage1.csv"
+
+    # already-processed article IDs when resuming ---------------------------
+    processed_ids: set[int] = set()
+    if resume and csv_path.exists():
+        with csv_path.open("r", newline="", encoding="utf-8") as _existing:
+            rdr = csv.DictReader(_existing)
+            if "article_id" in rdr.fieldnames:  # header check
+                for row in rdr:
+                    try:
+                        processed_ids.add(int(row["article_id"]))
+                    except (KeyError, ValueError):
+                        continue
     trace_path = output_dir / f"cons{consultation_id}_trace.log"
 
     # ---------------------------------------------------------------------
@@ -170,33 +181,40 @@ def process_consultation(
     # ---------------------------------------------------------------------
     # 3. Write CSV
     # ---------------------------------------------------------------------
-    with csv_path.open("w", newline="", encoding="utf‑8") as f:
+    mode = "a" if resume and csv_path.exists() else "w"
+    with csv_path.open(mode, newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
-            "consultation_id",
-            "part",
-            "chapter",
-            "article_number",
-            "classifier_decision",
-            "json_valid",
-            "law_reference",
-            "change_type",
-            "major_change_summary",
-            "article_title_json",
-            "provision_type",
-            "core_provision_summary",
-            "key_themes",
-            "llm_output_raw",
-            "parsed_json",
-            "raw_content",
-        ])
+        # Write header only if we opened in write mode
+        if mode == "w":
+            writer.writerow([
+                "consultation_id",
+                "article_id",
+                "part",
+                "chapter",
+                "article_number",
+                "classifier_decision",
+                "status",
+                "json_valid",
+                "law_reference",
+                "change_type",
+                "major_change_summary",
+                "article_title_json",
+                "provision_type",
+                "core_provision_summary",
+                "key_themes",
+                "llm_output_raw",
+                "parsed_json",
+                "raw_content",
+            ])
 
         row_counter = 0
+        gen_is_stub = getattr(_gen_fn, "IS_STUB", False)
 
         # -------------------------------------------------------------
         # Internal helper – robust row writer
         # -------------------------------------------------------------
         def _write_row(
+             
             article_id: int,
             decision: str,
             parsed: object | None,
@@ -204,13 +222,24 @@ def process_consultation(
             prompt: str | None,
             raw_content: str | None = "",
         ) -> None:
-            nonlocal row_counter
+            nonlocal row_counter, processed_ids
+            # Skip any output from stub generator to avoid contaminating real CSV
+            if gen_is_stub:
+                return
+            if article_id in processed_ids:
+                return
             log.debug("Preparing CSV row for article_id=%s decision=%s", article_id, decision)
             part, chap, _ = part_map.get(article_id, ("", "", ""))
             art_num = article_num_map.get(article_id)
 
             is_dict = isinstance(parsed, dict)
             json_valid = bool(is_dict)
+
+            # Determine validation / truncation status
+            if decision in ("modifies", "new_provision"):
+                status = "ok" if json_valid else "invalid"
+            else:
+                status = "truncated" if is_truncated_text(raw or "") else "ok"
 
             # convenient helper to pull value when we *know* parsed is a dict
             def _g(key: str, default: str = "") -> str:
@@ -239,10 +268,12 @@ def process_consultation(
             writer.writerow(
                 [
                     consultation_id,
+                    article_id,
                     part,
                     chap,
                     art_num,
                     decision,
+                    status,
                     json_valid,
                     law_reference,
                     change_type,
@@ -257,9 +288,13 @@ def process_consultation(
                 ]
             )
 
+            # Mark as processed only if JSON is valid
+            if json_valid and status == "ok":
+                processed_ids.add(article_id)
             row_counter += 1
             if row_counter % 5 == 0:
                 f.flush()
+                os.fsync(f.fileno())
 
             # add prompt/output trace
             log.info("ID %s | Part %s | Chap %s | ArtNum %s | Decision %s", article_id, part, chap, art_num, decision)
@@ -313,6 +348,7 @@ def process_consultation(
 
         # final flush to guarantee file integrity even if <5 rows remaining
         f.flush()
+        os.fsync(f.fileno())
 
     LOGGER.info("CSV written: %s | Trace: %s", csv_path, trace_path)
     return True
@@ -352,6 +388,7 @@ def main() -> None:
     parser.add_argument("--real", action="store_true", help="Use real LLM instead of dry‑run stub")
     parser.add_argument("--article-id", type=int, default=None, help="Process only this article ID (debug)")
     parser.add_argument("--debug", action="store_true", help="Enable verbose debug logging")
+    parser.add_argument("--resume", action="store_true", help="Append to existing CSV and skip already processed article IDs")
     parser.add_argument("--trace", action="store_true", help="Write detailed reasoning trace via ReasoningTracer")
 
     args = parser.parse_args()
