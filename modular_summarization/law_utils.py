@@ -204,8 +204,13 @@ def _extract_json_candidate(raw: str) -> str:
     """
     cleaned = raw.strip().lstrip("\ufeff\u200b\u200e\u200f")  # strip BOM / ZWSP / LRM / RLM
 
-    # Fast-path: if string already starts with { and ends with }
-    if cleaned.startswith("{") and cleaned.rstrip().endswith("}"):
+    # Fast-path: if the string already looks like a complete JSON value
+    # Return immediately for either an *object* ("{…}") or an *array* ("[…]"),
+    # because further slicing could remove the outer brackets and break parsing.
+    if (
+        (cleaned.startswith("{") and cleaned.rstrip().endswith("}"))
+        or (cleaned.startswith("[") and cleaned.rstrip().endswith("]"))
+    ):
         return cleaned
 
     start = cleaned.find("{")
