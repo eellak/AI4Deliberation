@@ -103,3 +103,80 @@ python topic_modeling/src/evaluate_topics.py \
 ```
 
 Outputs land in `topic_modeling/outputs/<version>/<consultation_id>/…`. 
+
+### 4.1  Enhanced evaluator – larger context & offline mode
+
+The new script **`evaluate_topics_enhanced.py`** feeds Gemini (or local Gemma) *hundreds* of comments per topic instead of the fixed 10-comment subset and also supports a full **offline/manual-export** workflow.
+
+Typical use-cases:
+
+```bash
+# (A) Full automatic evaluation with Gemini API
+python topic_modeling/src/evaluate_topics_enhanced.py \
+       --consultation_id 320 \
+       --version v2 \
+       --gemini \
+       --api_key $GEMINI_API_KEY   # or set GEMINI_API_KEY in .env
+
+# (B) Run everything locally with Gemma (no API key)
+python topic_modeling/src/evaluate_topics_enhanced.py \
+       --consultation_id 320 --version v2 --local
+
+# (C) **Offline** – just dump the prompts for manual copy-paste
+python topic_modeling/src/evaluate_topics_enhanced.py \
+       --consultation_id 320 --version v2 --export_manual
+```
+
+In offline mode the script creates:
+
+```
+outputs/<ver>/<cid>/evaluation/manual_prompts/
+   topic_0/
+      prompt.txt         # ready-to-paste block for Gemini Chat/AI-Studio
+      comments.txt       # the comments fed to Gemini (one per line)
+      metadata.json      # helper counts, token estimate, etc.
+   …
+   all_prompts_combined.txt   # optional one-file dump
+   README_how_to_use.txt      # quick instructions
+```
+
+After you paste a `prompt.txt` into Gemini and get the reply, record the score/feedback manually (or parse later) – the script has already created a placeholder CSV under `evaluation_enhanced_<timestamp>.csv`.
+
+> **Dependencies added**: `sentence-transformers>=2.6`, `scikit-learn>=1.4`. These were appended to `requirements.txt`.
+
+### 4.2  Unified single-prompt evaluator
+
+`evaluate_topics_unified.py` packs **all** topics of one consultation into a *single* Gemini/Gemma prompt.
+
+Pipeline in brief
+1. Reads `clustering/topics.csv` to obtain every comment and its BERTopic `Probability`.
+2. Loads titles & explanations from `titles/topics_llm_<ver>.jsonl` (or `.csv`).
+3. For each topic it ranks **all** comments by probability.
+4. Fills the LLM context window *round-robin* across topics so ότι every topic contributes comments and the highest-probability ones enter earliest.
+5. Asks the LLM to return JSON with `{topic, score, feedback}`.
+
+Run examples
+```bash
+# Evaluate with Gemini (one API call)
+python topic_modeling/src/evaluate_topics_unified.py \
+       --consultation_id 320 --version v2 \
+       --gemini --api_key $GEMINI_API_KEY
+
+# Local Gemma (no key, slower, offline)
+python topic_modeling/src/evaluate_topics_unified.py \
+       --consultation_id 320 --version v2 --local
+
+# Manual copy-paste prompt
+python topic_modeling/src/evaluate_topics_unified.py \
+       --consultation_id 320 --version v2 --export_manual
+```
+Outputs:
+```
+outputs/<ver>/<cid>/evaluation/
+   unified_prompt/prompt.txt   # if --export_manual
+   evaluation_unified_<ts>.csv # parsed scores when LLM is called
+```
+
+The old `evaluate_topics_enhanced.py` (per-topic prompts) is still available for fine-grained or incremental evaluations.
+
+--- 
