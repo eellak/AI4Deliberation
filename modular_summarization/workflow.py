@@ -210,6 +210,7 @@ def run_workflow(
     for ch in all_chunks:
         art_num = ch.get("article_number")
         content = ch["content"]
+        law_refs = find_law_references(content)
         # Detect and store introductory Σκοπός / Αντικείμενο articles ----------------
         # Constraints:
         #   • Article 1  → Σκοπός
@@ -258,7 +259,7 @@ def run_workflow(
             # Determine law name and quoted changes
             law_refs = find_law_references(content)
             law_name = law_refs[0]["match"] if law_refs else "τον προηγούμενο νόμο"
-            quoted_segments = extract_quoted_segments(content)
+            quoted_segments = [qs for qs in extract_quoted_segments(content) if len(qs.split()) >= 10]
 
             # Fallback to full chunk if no quotes detected (mark truncation)
             truncated_flag_global = False
@@ -305,7 +306,7 @@ def run_workflow(
                             prompt=prompt_mod,
                             raw_output=out_text,
                             parsed_output=summary_txt,
-                            metadata={"retries": retries, "truncated": truncated_flag_global},
+                            metadata={"retries": retries, "truncated": truncated_flag_global, "law_ref_missing": not law_refs},
                         )
                     )
 
