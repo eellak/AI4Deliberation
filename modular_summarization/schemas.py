@@ -89,6 +89,17 @@ PART_SUMMARY_SCHEMA = {
 }
 
 # ---------------------------------------------------------------------------
+# New Stage-1 single-field article summary schema
+# ---------------------------------------------------------------------------
+ARTICLE_SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string", "maxLength": 550},
+    },
+    "required": ["summary"],
+}
+
+# ---------------------------------------------------------------------------
 # Polished summary schema (legacy)
 # ---------------------------------------------------------------------------
 POLISHED_SUMMARY_SCHEMA = {

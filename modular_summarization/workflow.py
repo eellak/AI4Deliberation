@@ -7,7 +7,7 @@ Usage::
 from __future__ import annotations
 
 import json
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Set, Tuple
 import logging
 import re
 
@@ -20,11 +20,17 @@ from .prompts import get_prompt
 from .validator import generate_plain_with_retry
 from .validator import (
     generate_json_with_validation,
-    validate_law_mod_output,
-    validate_law_new_output,
+    validate_article_summary_output,
+    extract_json,
     ValidationError,
 )
-from modular_summarization.law_utils import article_modifies_law, parse_law_mod_json, parse_law_new_json, is_skopos_article, is_antikeimeno_article
+from modular_summarization.law_utils import (
+    article_modifies_law,
+    extract_quoted_segments,
+    find_law_references,
+    is_skopos_article,
+    is_antikeimeno_article,
+)
 from modular_summarization.llm import get_generator
 from .trace import ReasoningTracer, TraceEntry
 from . import config as cfg
@@ -203,6 +209,7 @@ def run_workflow(
 
     for ch in all_chunks:
         art_num = ch.get("article_number")
+        content = ch["content"]
         # Detect and store introductory Σκοπός / Αντικείμενο articles ----------------
         # Constraints:
         #   • Article 1  → Σκοπός
@@ -246,89 +253,123 @@ def run_workflow(
             )
             stage1_results.append(out_text)
 
-        # Binary classifier path
-        if article_modifies_law(ch["content"]):
-            mod_prompt = "[SCHEMA:LAW_MOD]\n" + get_prompt("law_mod_json_mdata") + "\n" + ch["content"]
+        # Binary classifier path -------------------------------------------------
+        if article_modifies_law(content):
+            # Determine law name and quoted changes
+            law_refs = find_law_references(content)
+            law_name = law_refs[0]["match"] if law_refs else "τον προηγούμενο νόμο"
+            quoted_segments = extract_quoted_segments(content)
 
-            # Dynamic classifier token cap ---------------------------------
-            tokens_in, *_ = length_metrics(ch["content"])
-            mod_token_limit = min(1024, int(tokens_in * 1.2) + 128)
+            # Fallback to full chunk if no quotes detected (mark truncation)
+            truncated_flag_global = False
+            if not quoted_segments:
+                words = content.split()
+                fallback_text = " ".join(words[:900])
+                quoted_segments = [fallback_text]
+                truncated_flag_global = True
 
-            try:
-                mod_res_text, mod_retries = generate_json_with_validation(
-                    mod_prompt,
-                    mod_token_limit,
-                    _gen_fn,
-                    validate_law_mod_output,
-                    max_retries=2,
+            # Iterate over each quoted change (or fallback segment)
+            for quoted_change in quoted_segments:
+                prompt_mod = get_prompt("law_mod_json").format(
+                    law_name=law_name,
+                    quoted_change=quoted_change,
                 )
-                parsed = parse_law_mod_json(mod_res_text)
-            except ValidationError as exc:
-                mod_res_text = exc.last_output or ""
-                mod_retries = 2
-                parsed = None
-            
-            # Log to trace if enabled
-            if tracer:
-                tracer.log_entry(TraceEntry(
-                    article_id=ch.get("db_id"),
-                    article_number=ch.get("article_number"),
-                    classification="modifies",
-                    prompt=mod_prompt,
-                    raw_output=mod_res_text,
-                    parsed_output=parsed,
-                    metadata={"retries": mod_retries}
-                ))
 
-            law_mod_results.append({
-                "article_id": ch.get("db_id"),
-                "article_number": ch.get("article_number"),
-                "llm_output": mod_res_text,
-                "parsed": parsed,
-                "prompt": mod_prompt,
-                "retries": mod_retries,
-            })
+                tokens_in, *_ = length_metrics(quoted_change)
+                token_limit = min(768, int(tokens_in * 1.3) + 128)
+
+                try:
+                    out_text, retries = generate_json_with_validation(
+                        prompt_mod,
+                        token_limit,
+                        _gen_fn,
+                        validate_article_summary_output,
+                        max_retries=2,
+                    )
+                    parsed_json = extract_json(out_text)
+                    summary_txt = (
+                        parsed_json.get("summary", "") if isinstance(parsed_json, dict) else ""
+                    )
+                except ValidationError as exc:
+                    out_text = exc.last_output or ""
+                    retries = 2
+                    summary_txt = ""
+
+                # Log to trace if enabled
+                if tracer:
+                    tracer.log_entry(
+                        TraceEntry(
+                            article_id=ch.get("db_id"),
+                            article_number=ch.get("article_number"),
+                            classification="modifies",
+                            prompt=prompt_mod,
+                            raw_output=out_text,
+                            parsed_output=summary_txt,
+                            metadata={"retries": retries, "truncated": truncated_flag_global},
+                        )
+                    )
+
+                law_mod_results.append(
+                    {
+                        "article_id": ch.get("db_id"),
+                        "article_number": ch.get("article_number"),
+                        "classifier_decision": "modifies",
+                        "truncated": truncated_flag_global,
+                        "summary_text": summary_txt,
+                        "raw_prompt": prompt_mod,
+                        "raw_output": out_text,
+                        "retries": retries,
+                    }
+                )
         else:
-            # New provisions JSON extraction
-            new_prompt = "[SCHEMA:LAW_NEW]\n" + get_prompt("law_new_json") + "\n" + ch["content"]
+            # New provisions JSON extraction (single-field summary)
+            prompt_new = get_prompt("law_new_json").format(article=content)
 
-            tokens_in, *_ = length_metrics(ch["content"])
-            new_token_limit = min(1024, int(tokens_in * 1.2) + 128)
+            tokens_in, *_ = length_metrics(content)
+            new_token_limit = min(768, int(tokens_in * 1.3) + 128)
 
             try:
                 new_res_text, new_retries = generate_json_with_validation(
-                    new_prompt,
+                    prompt_new,
                     new_token_limit,
                     _gen_fn,
-                    validate_law_new_output,
+                    validate_article_summary_output,
                     max_retries=2,
                 )
-                parsed_new = parse_law_new_json(new_res_text)
+                parsed_json_new = extract_json(new_res_text)
+                summary_new = (
+                    parsed_json_new.get("summary", "") if isinstance(parsed_json_new, dict) else ""
+                )
             except ValidationError as exc:
                 new_res_text = exc.last_output or ""
                 new_retries = 2
-                parsed_new = None
-            
-            # Log to trace if enabled
-            if tracer:
-                tracer.log_entry(TraceEntry(
-                    article_id=ch.get("db_id"),
-                    article_number=ch.get("article_number"),
-                    classification="new_provision",
-                    prompt=new_prompt,
-                    raw_output=new_res_text,
-                    parsed_output=parsed_new,
-                    metadata={"retries": new_retries}
-                ))
+                summary_new = ""
 
-            law_new_results.append({
-                "article_id": ch.get("db_id"),
-                "article_number": ch.get("article_number"),
-                "llm_output": new_res_text,
-                "parsed": parsed_new,
-                "prompt": new_prompt,
-                "retries": new_retries,
-            })
+            if tracer:
+                tracer.log_entry(
+                    TraceEntry(
+                        article_id=ch.get("db_id"),
+                        article_number=ch.get("article_number"),
+                        classification="new_provision",
+                        prompt=prompt_new,
+                        raw_output=new_res_text,
+                        parsed_output=summary_new,
+                        metadata={"retries": new_retries},
+                    )
+                )
+
+            law_new_results.append(
+                {
+                    "article_id": ch.get("db_id"),
+                    "article_number": ch.get("article_number"),
+                    "classifier_decision": "new_provision",
+                    "truncated": False,
+                    "summary_text": summary_new,
+                    "raw_prompt": prompt_new,
+                    "raw_output": new_res_text,
+                    "retries": new_retries,
+                }
+            )
 
     # TODO: pipeline Stage 2 & 3 (placeholder)
     

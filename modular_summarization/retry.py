@@ -35,12 +35,6 @@ def generate_with_retry(
 
     Fresh-restart retries using *validator.generate_plain_with_retry* under the hood.
     Continuation prompt logic has been removed."""
-
-    Uses a simple truncation heuristic to decide if the model response is
-    incomplete and, if so, asks the model to continue up to `max_retries`
-    times.  This helper is generic and may be reused by other workflows that
-    still need automatic continuation.
-    """
     from .validator import generate_plain_with_retry
 
     out_text, retries, trunc = generate_plain_with_retry(

@@ -17,11 +17,7 @@ from typing import Dict, List, Optional, Tuple, Union, Any
 from pathlib import Path
 
 from .prompts import get_prompt
-from .law_utils import (
-    get_summary,
-    parse_law_mod_json,
-    parse_law_new_json,
-)
+from .law_utils import get_summary
 from .law_types import NarrativePlan, PlanningInput, SynthesisInput
 
 __all__ = [
@@ -34,7 +30,7 @@ __all__ = [
     "construct_stage3_synth_input",
     "parse_chapter_summary",
     "parse_part_summary",
-]
+]  # unchanged
 
 _log = logging.getLogger(__name__)
 
@@ -88,32 +84,14 @@ def greek_numeral_sort_key(label: str) -> Tuple[int, str]:
 # Article → bullet helpers
 # ---------------------------------------------------------------------------
 
-def _fmt_law_mod(d: Dict[str, Any]) -> str:
-    return (
-        f"Στο νομοσχέδιο {d['change_type']} το {d['article_number']} του {d['law_reference']}. "
-        f"Η σύνοψη της αλλαγής είναι: {d['major_change_summary']}"
-    )
-
-
-def _fmt_law_new(d: Dict[str, Any]) -> str:
-    return f"{d['article_title']} ({d['provision_type']}): {d['core_provision_summary']}"
-
-
 def build_bullet_line(row: Dict[str, str]) -> Optional[str]:
-    decision = row.get("classifier_decision", "")
-    parsed_raw = row.get("parsed_json", "")
-    try:
-        parsed = json.loads(parsed_raw) if parsed_raw else None
-    except json.JSONDecodeError:
-        parsed = None
+    """Return a Greek bullet line for Stage-2 aggregation.
 
-    if decision == "modifies" and parsed:
-        d = parse_law_mod_json(json.dumps(parsed, ensure_ascii=False))
-        return "• " + _fmt_law_mod(d) if d else None
-    if decision == "new_provision" and parsed:
-        d = parse_law_new_json(json.dumps(parsed, ensure_ascii=False))
-        return "• " + _fmt_law_new(d) if d else None
-    return None
+    Simply prefixes the single-field summary text from Stage-1 with "• ".
+    Returns None for rows without a usable summary (e.g. intro articles).
+    """
+    sum_txt = (row.get("summary_text") or "").strip()
+    return f"• {sum_txt}" if sum_txt else None
 
 # ---------------------------------------------------------------------------
 # Prompt builders (Stage-2 & legacy Stage-3)

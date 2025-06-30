@@ -37,8 +37,14 @@ def extract_json(text: str) -> _JSON:
     """
     try:
         return json.loads(text)
-    except Exception as e:  # pragma: no cover – unified handling
-        raise ValueError(f"Not valid JSON: {e}") from e
+    except Exception:
+        # Attempt to salvage JSON embedded in text (markdown fences, extra prose, etc.)
+        try:
+            from .stage3_expanded import extract_json_from_text  # heavyweight but avoids circular import earlier
+            salvaged = extract_json_from_text(text)
+            return json.loads(salvaged)
+        except Exception as e:  # pragma: no cover – unified handling
+            raise ValueError(f"Not valid JSON after salvage: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +195,11 @@ def validate_chapter_summary_output(text: str) -> list[str]:
 
 def validate_part_summary_output(text: str) -> list[str]:
     return _validate_simple(text, _schemas.PART_SUMMARY_SCHEMA)
+
+
+def validate_article_summary_output(text: str) -> list[str]:
+    """Validate Stage-1 single-field article summary JSON."""
+    return _validate_simple(text, _schemas.ARTICLE_SUMMARY_SCHEMA)
 
 
 def validate_narrative_section_output(text: str) -> list[str]:
