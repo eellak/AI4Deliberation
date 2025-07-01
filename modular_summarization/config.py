@@ -28,7 +28,7 @@ CURRENT_TOP_P: float = INITIAL_TOP_P
 # ---------------------------------------------------------------------------
 # MODEL & DEVICE
 # ---------------------------------------------------------------------------
-DEFAULT_MODEL_ID: str = "google/gemma-3-4b-it"  # <-- change if needed
+DEFAULT_MODEL_ID: str = "google/gemma-3-27b-it"  # <-- change if needed
 TORCH_DTYPE = "bfloat16"  # string to avoid hard torch import here
 
 # ---------------------------------------------------------------------------

@@ -102,10 +102,10 @@ def build_chapter_prompt(bullets: List[str]) -> Tuple[str, int]:
     words_in = len(joined.split())
     target_words = max(int(words_in * 0.5), 30)
     token_limit = int(target_words * 5)
-    prompt = (
-        get_prompt("stage2_chapter").format(target_words=target_words, max_words=int(token_limit / 1.3))
-        + "\n"
-        + joined
+    prompt_template = get_prompt("stage2_chapter")
+    prompt = prompt_template.format(
+        target_words=target_words,
+        chapter_summaries=joined,
     )
     return prompt, token_limit
 
@@ -121,10 +121,10 @@ def build_part_prompt(intro_lines: List[str], chapter_summaries: List[str]) -> T
     words_in = len(joined.split())
     target_words = max(int(words_in * 0.6), 300)
     token_limit = int(target_words * 3.5)
-    prompt = (
-        get_prompt("stage3_part").format(target_words=target_words, max_words=int(token_limit / 1.3))
-        + "\n"
-        + joined
+    prompt_template = get_prompt("stage3_part")
+    prompt = prompt_template.format(
+        target_words=target_words,
+        part_content=joined,
     )
     return prompt, token_limit
 

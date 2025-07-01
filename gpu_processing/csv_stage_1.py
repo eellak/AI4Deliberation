@@ -23,22 +23,26 @@ from __future__ import annotations
 
 import argparse
 import csv
-from modular_summarization.validator import is_truncated_text
-import csv, json, logging, os, re, sys
+import json
+import logging
+import os
+import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
 # ---------------------------------------------------------------------------
-# Ensure project root available on PYTHONPATH
+# Ensure project root available on PYTHONPATH *before* any local imports
 # ---------------------------------------------------------------------------
-# Resolve repository root as the *parent* directory that contains this script
 ROOT_DIR = Path(__file__).resolve().parents[1]  # e.g. .../AI4Deliberation
-
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Local imports *after* mutating sys.path
+# Local imports (safe after path patch)
+from modular_summarization.validator import is_truncated_text
+
+
 from modular_summarization.workflow import run_workflow  # noqa: E402
 from modular_summarization.db_io import fetch_articles  # noqa: E402
 from modular_summarization.hierarchy_parser import BillHierarchy  # noqa: E402
@@ -193,22 +197,16 @@ def process_consultation(
                 "chapter",
                 "article_number",
                 "classifier_decision",
-                "status",
-                "json_valid",
                 "law_reference",
-                "change_type",
-                "major_change_summary",
-                "article_title_json",
-                "provision_type",
-                "core_provision_summary",
-                "key_themes",
-                "llm_output_raw",
-                "parsed_json",
-                "raw_content",
+                "summary_text",
             ])
 
         row_counter = 0
-        gen_is_stub = getattr(_gen_fn, "IS_STUB", False)
+        # Determine if the generator is the lightweight stub.
+        # When `dry_run_mode` is True, run_workflow used the stub generator.
+        # For real runs assume non-stub (Gemma) – we cannot easily inspect the
+        # internal generator here.
+        gen_is_stub = dry_run_mode
 
         # -------------------------------------------------------------
         # Internal helper – robust row writer
@@ -235,12 +233,6 @@ def process_consultation(
             is_dict = isinstance(parsed, dict)
             json_valid = bool(is_dict)
 
-            # Determine validation / truncation status
-            if decision in ("modifies", "new_provision"):
-                status = "ok" if json_valid else "invalid"
-            else:
-                status = "truncated" if is_truncated_text(raw or "") else "ok"
-
             # convenient helper to pull value when we *know* parsed is a dict
             def _g(key: str, default: str = "") -> str:
                 return parsed.get(key, default) if is_dict else default  # type: ignore[attr-defined]
@@ -251,6 +243,21 @@ def process_consultation(
             article_title_json   = _g("article_title")
             provision_type       = _g("provision_type")
             core_provision_sum   = _g("core_provision_summary")
+
+            # -----------------------------------------------------------------
+            # Build aggregated summary_text field for Stage-2 processing
+            # -----------------------------------------------------------------
+            from modular_summarization.law_utils import get_summary as _get_summary
+            summary_text = (core_provision_sum or major_change_summary or "").strip()
+            if not summary_text:
+                summary_text = _get_summary(raw or "") or ""
+
+            # Determine validation / truncation status *after* we know summary_text
+            if decision in ("modifies", "new_provision"):
+                # Accept row as OK if we at least extracted a usable summary_text even when JSON dict failed
+                status = "ok" if (json_valid or summary_text) else "invalid"
+            else:
+                status = "truncated" if is_truncated_text(raw or "") else "ok"
 
             key_themes_raw: list[str] | str = _g("key_themes", [])  # type: ignore[assignment]
             if isinstance(key_themes_raw, list):
@@ -273,18 +280,8 @@ def process_consultation(
                     chap,
                     art_num,
                     decision,
-                    status,
-                    json_valid,
                     law_reference,
-                    change_type,
-                    major_change_summary,
-                    article_title_json,
-                    provision_type,
-                    core_provision_sum,
-                    key_themes,
-                    raw_safe,
-                    parsed_field,
-                    content_safe,
+                    summary_text,
                 ]
             )
 
@@ -330,7 +327,7 @@ def process_consultation(
                 art_id,
                 decision,
                 item.get("parsed"),
-                item.get("llm_output"),
+                item.get("raw_output") or item.get("llm_output"),
                 item.get("prompt"),
             )
 

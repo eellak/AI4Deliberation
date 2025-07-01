@@ -198,79 +198,35 @@ def _polish_summary(text: str, part: str, generator_fn):
 # ---------------------------------------------------------------------------
 
 def generate_part_modifications_summary(stage1_rows: List[Dict[str, str]], part: str) -> str:
-    """Generate a brief Greek summary of law modifications for a specific part."""
-    # Filter rows for this part that modify laws
-    part_modifying_rows = [
-        row for row in stage1_rows 
-        if row.get('part') == part and row.get('classifier_decision') == 'modifies'
-    ]
-    
-    if not part_modifying_rows:
+    """Return a single Greek sentence listing the laws modified in *part*.
+
+    Examples
+    --------
+    >>> "Το παρόν μέρος τροποποιεί τον νόμο ν. 123/2010."
+    >>> "Το παρόν μέρος τροποποιεί τους νόμους: ν. 123/2010, ν. 45/1985 και ν. 999/2023."
+    """
+    # Collect unique non-empty law references that were actually modified.
+    laws: set[str] = {
+        (row.get("law_reference") or "").strip()
+        for row in stage1_rows
+        if row.get("part") == part and row.get("classifier_decision") == "modifies"
+    }
+    # Remove empty / nan tokens
+    laws = {lw for lw in laws if lw and lw.lower() != "nan"}
+
+    if not laws:
         return ""
-    
-    # Group by law reference
-    law_refs = defaultdict(list)
-    
-    for row in part_modifying_rows:
-        law_ref = row.get('law_reference', '').strip()
-        change_type = row.get('change_type', '').strip()
-        
-        if law_ref and law_ref != 'nan' and law_ref != '':
-            law_refs[law_ref].append({
-                'type': change_type,
-                'article': row.get('article_number', '')
-            })
-    
-    if not law_refs:
-        return ""
-    
-    # Build summary - one line per law
-    summary_lines = []
-    
-    # Sort laws by number of modifications (descending)
-    sorted_laws = sorted(law_refs.items(), key=lambda x: len(x[1]), reverse=True)
-    
-    for law, mods in sorted_laws:
-        # Count modification types for this law
-        law_mod_types = Counter(mod['type'] for mod in mods)
-        
-        # Build the modification types part
-        type_parts = []
-        if 'αντικαθίσταται' in law_mod_types:
-            count = law_mod_types['αντικαθίσταται']
-            type_parts.append(f"{count} {'αντικατάσταση' if count == 1 else 'αντικαταστάσεις'}")
-        if 'τροποποιείται' in law_mod_types:
-            count = law_mod_types['τροποποιείται']
-            type_parts.append(f"{count} {'τροποποίηση' if count == 1 else 'τροποποιήσεις'}")
-        if 'προστίθεται' in law_mod_types:
-            count = law_mod_types['προστίθεται']
-            type_parts.append(f"{count} {'προσθήκη' if count == 1 else 'προσθήκες'}")
-        if 'συμπληρώνεται' in law_mod_types:
-            count = law_mod_types['συμπληρώνεται']
-            type_parts.append(f"{count} {'συμπλήρωση' if count == 1 else 'συμπληρώσεις'}")
-        if 'καταργείται' in law_mod_types:
-            count = law_mod_types['καταργείται']
-            type_parts.append(f"{count} {'κατάργηση' if count == 1 else 'καταργήσεις'}")
-        if 'διαγράφεται' in law_mod_types:
-            count = law_mod_types['διαγράφεται']
-            type_parts.append(f"{count} {'διαγραφή' if count == 1 else 'διαγραφές'}")
-        
-        # Format the line
-        num_changes = len(mods)
-        if num_changes == 1:
-            change_word = "αλλαγή"
-        else:
-            change_word = "αλλαγές"
-        
-        if type_parts:
-            # Include breakdown of modification types
-            type_str = ', '.join(type_parts)
-            summary_lines.append(f"{num_changes} {change_word} του {law} ({type_str}).")
-        else:
-            # Simple format without breakdown
-            summary_lines.append(f"{num_changes} {change_word} του {law}.")
-    
-    return '\n'.join(summary_lines)
+
+    # Sort deterministically (alphabetical after stripping accents/punctuation)
+    laws_sorted = sorted(laws, key=lambda s: s.lower())
+
+    if len(laws_sorted) == 1:
+        return f"Το παρόν μέρος τροποποιεί τον νόμο {laws_sorted[0]}."
+
+    # Build comma-separated list with "και" before last item.
+    *head, last = laws_sorted
+    law_list_txt = ", ".join(head) + f" και {last}"
+    return f"Το παρόν μέρος τροποποιεί τους νόμους: {law_list_txt}."
 
 # ---------------------------------------------------------------------------
 # Final summary export helper

@@ -439,7 +439,7 @@ def synthesize_paragraph(
     
     # Get the prompt template and append input data
     prompt_template = get_prompt("stage3_synth")
-    prompt = prompt_template + "\n\n**Δεδομένα Εισόδου:**\n" + input_json_str
+    prompt = prompt_template.format(input_data_json=input_json_str)
     
     # Call the LLM
     _log.info(
@@ -484,7 +484,8 @@ def summarize_single_chapter(
     max_tokens: int = 600,
 ) -> str:
     """Fast-track summarization for Parts with a single Chapter."""
-    prompt = get_prompt("stage3_single_chapter") + "\n\n**Κείμενο Κεφαλαίου:**\n" + chapter_text
+    prompt_template = get_prompt("stage3_single_chapter")
+    prompt = prompt_template.format(chapter_text=chapter_text)
     from .validator import generate_json_with_validation, validate_chapter_summary_output
     resp, _ = generate_json_with_validation(
         prompt,
