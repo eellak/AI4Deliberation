@@ -112,11 +112,14 @@ STAGE3_PLAN_DYN_PROMPT = """[SCHEMA:NARRATIVE_PLAN]\n**Ρόλος (Persona):**
 
 # Fast-track prompt for single-chapter Parts
 STAGE3_SINGLE_CHAPTER_PROMPT = """[SCHEMA:SINGLE_CHAPTER_SUMMARY]
-**Ρόλος (Persona):**
+**Ρόλος:**
 Είστε έμπειρος δημοσιογράφος ειδικευμένος στην ανάλυση νομοθεσίας.
 
 Συνοψίστε το ακόλουθο Κεφάλαιο σε **120-150** λέξεις,
 με απλή γλώσσα και έμφαση στον τρόπο που επηρεάζει τους πολίτες.
+
+**Κείμενο Κεφαλαίου:**
+{chapter_text}
 
 Επιστρέφεις ΜΟΝΟ έγκυρο JSON, κανέναν άλλον χαρακτήρα πριν ή μετά:
 {{
@@ -128,9 +131,7 @@ STAGE3_SINGLE_CHAPTER_PROMPT = """[SCHEMA:SINGLE_CHAPTER_SUMMARY]
 - Ξεκίνα με σύντομη αναφορά στο θέμα του Κεφαλαίου.
 
 ΘΥΜΉΣΟΥ: Επιστρέφεις ΜΟΝΟ έγκυρο JSON.
-
-**Κείμενο Κεφαλαίου:**
-{chapter_text}"""
+"""
 
 # Chunk synthesis prompt for narrative sections
 STAGE3_SYNTH_PROMPT = """[SCHEMA:NARRATIVE_SECTION]
