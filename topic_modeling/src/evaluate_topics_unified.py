@@ -1,19 +1,27 @@
 # ---------------------------------------------------------------------------
-# evaluate_topics_unified.py – single-prompt evaluator (Gemini or local Gemma)
+# evaluate_topics_unified.py – Ενιαίος αξιολογητής θεματικών
 # ---------------------------------------------------------------------------
-# Builds **one** prompt per consultation that contains:
-#   • κάθε τίτλο, αιτιολόγηση και λέξεις-κλειδιά ανά topic
-#   • ΠΟΛΛΑ σχόλια πολιτών ταξινομημένα ανά συνάφεια (BERTopic probability),
-#     επιλεγμένα με round-robin across topics μέχρι να γεμίσει το context window.
-# Gemini (ή τοπικό Gemma) δίνει πίσω λίστα JSON:
-#   {"topic": <id>, "score": <1-5>, "feedback": "…"}
-# Τα αποτελέσματα γράφονται σε evaluation_unified_<timestamp>.csv ή, σε
-# offline mode (--export_manual), απλώς σώζεται το prompt για copy-paste.
+# Τι κάνει:
+#   • Δημιουργεί **ένα** mega-prompt ανά διαβούλευση που περιέχει για ΚΑΘΕ θέμα:
+#       – Τίτλο (Gemma), αιτιολόγηση και λέξεις-κλειδί.
+#       – Πολλά σχόλια (round-robin) ταξινομημένα βάσει πιθανότητας BERTopic
+#         έως ότου συμπληρωθεί ο προϋπολογισμός tokens.
+#   • Το LLM (Gemini API ή τοπική Gemma-3-4B-it) επιστρέφει JSON
+#       {"topic": id, "score": 1-5, "feedback": "…"}.
+#   • Αποθηκεύει CSV: `evaluation_unified_<timestamp>.csv`.
+#   • Με `--export_manual` γράφει μόνο το prompt για offline copy-paste.
 #
-# Usage examples
-#   python evaluate_topics_unified.py --consultation_id 320 --version v2 --gemini \
-#          --api_key $GEMINI_API_KEY --max_prompt_tokens 30000
-#   python evaluate_topics_unified.py --consultation_id 320 --version v2 --export_manual
+# Σημαντικές CLI επιλογές:
+#   --gemini / --local         Επιλογή backend (προεπιλογή: Gemini αν υπάρχει key).
+#   --max_prompt_tokens <N>    Συνολικά tokens σχολίων (προεπιλογή 32000).
+#   --temperature <0-1>        Θερμοκρασία δειγματοληψίας (προεπιλογή 0.2).
+#   --version v1|v2|v3         Από ποιο pipeline θα φορτωθούν τα outputs.
+#   --export_manual            Καμία κλήση LLM – μόνο αποθήκευση prompt.
+#
+# Παράδειγμα (Gemini):
+#   python evaluate_topics_unified.py \
+#         --consultation_id 320 --version v2 --gemini \
+#         --api_key $GEMINI_API_KEY --max_prompt_tokens 32000
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -40,17 +48,16 @@ from evaluate_topics_enhanced import (
     SAFE_SETTINGS,  # noqa: F401 – re-exported constant
 )
 
-DEFAULT_MODEL_ID = "models/gemini-2.5-flash"
+DEFAULT_MODEL_ID = "models/gemini-2.5-pro"
 DEFAULT_GEMMA_PATH = "/home/glossapi/.cache/huggingface/hub/models--google--gemma-3-4b-it"
 
 # ---------------------------------------------------------------------------
 # PROMPT TEMPLATES
 # ---------------------------------------------------------------------------
 INSTR_BLOCK = (
-    "Είσαι εξωτερικός αξιολογητής θεματικών ενότητων σχολίων δημόσιας διαβούλευσης.\n"
-    "Σου δίνεται μία λίστα θεμάτων (τίτλος + αιτιολόγηση + λέξεις-κλειδιά) όπως προτάθηκαν από άλλο σύστημα, "
-    "καθώς και ΠΟΛΛΑ αντιπροσωπευτικά σχόλια χρηστών ταξινομημένα κατά συνάφεια, "
-    "για να κατανοήσεις το γενικότερο περιεχόμενο των σχολίων και να αξιολογήσεις καλύτερα τα αποτελέσματα του άλλου συστήματος.\n"
+    "Είσαι εξωτερικός αξιολογητής θεματικών ενοτήτων σχολίων δημόσιας διαβούλευσης.\n"
+    "Σου δίνεται μία λίστα θεμάτων (τίτλος + αιτιολόγηση ) όπως προτάθηκαν από άλλο σύστημα, "
+    "καθώς και πολλά αντιπροσωπευτικά σχόλια χρηστών για να κατανοήσεις το γενικότερο περιεχόμενο των σχολίων και να αξιολογήσεις καλύτερα τα αποτελέσματα του άλλου συστήματος.\n"
     "Για κάθε θεματική/topic σου ζητείται να αξιολογήσεις:\n"
     "1. Τον τίτλο\n"
         "- Είναι σύντομος, περιγραφικός, ξεκάθαρος;\n"
@@ -62,7 +69,7 @@ INSTR_BLOCK = (
         "- Εξηγεί γιατί επιλέχθηκε αυτός ο τίτλος;\n"
     "Για ΚΑΘΕ θεματική/topic πρέπει να επιστρέψεις αντικείμενο JSON:\n"
     "  {\"topic\": <id>, \"score\": <1-5>, \"feedback\": \"…\"}\n"
-    "• Το score 1–5 εκφράζει πόσο καλά ο τίτλος & η εξήγηση ταιριάζουν στο περιεχόμενο των σχολίων.\n"
+    "• Το score 1–5 εκφράζει  το κατά πόσο καλά ο τίτλος (και δευτερευόντως η εξήγηση) ταιριάζουν στο περιεχόμενο των σχολίων και κατά πόσο το θέμα των σχολίων  είναι αυτό που περιγράφει ο τίτλος (και δευτερευόντως η εξήγηση).\n"
     "• Το feedback να είναι 1-2 προτάσεις, στα Ελληνικά.\n"
     "Επίστρεψε ΑΠΟΚΛΕΙΣΤΙΚΑ μια λίστα JSON χωρίς επιπλέον κείμενο."
 )
