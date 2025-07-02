@@ -1,6 +1,6 @@
 # Topic-Modeling Sub-Project
 
-This folder contains the three pipelines (`v1`, `v2`, `v3`) that build BERTopic models for Greek-language consultation comments plus the evaluator.
+This folder contains **four** pipelines (`v1`, `v1.1`, `v2`, `v3`) that build BERTopic models for Greek-language consultation comments plus the evaluator.
 
 ## Overview
 
@@ -18,6 +18,7 @@ Public-consultation platforms collect hundreds or thousands of free-text comment
 | Pipeline | What is new compared to the previous one | High-level steps |
 |----------|------------------------------------------|------------------|
 | **v1**   | Baseline.  Classic BERTopic pipeline + Gemma titles. | 1️⃣ Clean ➜ 2️⃣ SBERT embeddings ➜ 3️⃣ BERTopic **(UMAP→HDBSCAN, CLI-tunable)** ➜ 4️⃣ Representative comments (quantile) ➜ 5️⃣ Gemma titles |
+| **v1.1** | Auto-tuned `min_topic_size`, cosine-based topic merging, CPU fallback for Gemma, strict 3-field JSON prompt, optional LanguageTool spell-check, batch runner. | Same as v1 **plus**: auto min-topic, merge_topics (S-BERT ≥0.9), spell-check, clean JSON titles; outputs land in `outputs/v1/`; script name `consultation_topic_modeling_v1_1_release.py`. |
 | **v2**   | Pluggable embeddings, disk cache, fp16 Gemma, spell-check, strict JSON prompt. | Same as v1 but you can pick `--embedding_backend {sbert,gte_large}`; clustering still UMAP→HDBSCAN with `--umap_*` / `--hdb_*` flags; outputs land in `outputs/v2/` |
 | **v3**   | Adds key-phrase extraction, hallucination guard, cluster hierarchy visual. | 1️⃣ Clean ➜ 2️⃣ Gemma key-phrases ➜ 3️⃣ Similarity filter ➜ 4️⃣ BERTopic **(UMAP→HDBSCAN)** ➜ 5️⃣ Titles that cite key-phrases |
 
@@ -90,6 +91,12 @@ The scripts automatically load `.env` via `python-dotenv`.
 ## 4. Running
 
 ```bash
+# v1.1 release example
+python topic_modeling/src/consultation_topic_modeling_v1_1_release.py \
+       --consultation_id 320 \
+       --db_url postgresql://user:pass@host/dbname \
+       --gemma_path /path/to/gemma-3-4b-it
+
 # v2 example
 python topic_modeling/src/consultation_topic_modeling_v2.py \
        --consultation_id 320 \
