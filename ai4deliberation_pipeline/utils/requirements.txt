@@ -1,0 +1,7 @@
+# External dependencies for ai4deliberation_pipeline/utils directory
+requests>=2.25.0
+pandas>=1.3.0
+markdownify>=0.11.0
+text-cleaner-rs>=0.1.0
+glossapi>=0.1.0
+huggingface-hub>=0.0.12

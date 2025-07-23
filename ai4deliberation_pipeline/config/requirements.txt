@@ -1,0 +1,2 @@
+# External dependencies for ai4deliberation_pipeline/config directory
+pyyaml>=5.4.0

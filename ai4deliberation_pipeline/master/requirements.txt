@@ -1,0 +1,2 @@
+# External dependencies for ai4deliberation_pipeline/master directory
+sqlalchemy>=1.4.0

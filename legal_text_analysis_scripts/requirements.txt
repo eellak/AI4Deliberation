@@ -1,0 +1,2 @@
+# Requirements for legal_text_analysis_scripts
+pandas

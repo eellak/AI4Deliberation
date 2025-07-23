@@ -1,0 +1,4 @@
+# External dependencies for ai4deliberation_pipeline/scraper directory
+beautifulsoup4>=4.9.0
+requests>=2.25.0
+sqlalchemy>=1.4.0

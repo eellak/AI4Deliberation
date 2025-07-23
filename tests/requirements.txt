@@ -1,0 +1,2 @@
+# External dependencies for tests directory
+pytest>=6.0.0

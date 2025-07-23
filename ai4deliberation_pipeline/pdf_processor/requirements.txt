@@ -1,0 +1,4 @@
+# External dependencies for ai4deliberation_pipeline/pdf_processor directory
+pandas>=1.3.0
+aiohttp>=3.8.0
+glossapi>=0.1.0

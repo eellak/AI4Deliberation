@@ -1,0 +1,4 @@
+# Requirements for modular_summarization
+torch
+transformers
+lmformatenforcer

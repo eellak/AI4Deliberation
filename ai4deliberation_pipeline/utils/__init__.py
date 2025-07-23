@@ -19,5 +19,6 @@ __all__ = [
     'ContentProcessor',
     'create_migration_backup',
     'migrate_database_schema', 
-    'verify_migration'
+    'verify_migration',
+    'anonymizer'
 ] 

@@ -1,0 +1,4 @@
+# External dependencies for ai4deliberation_pipeline/html_processor directory
+markdownify>=0.11.0
+tqdm>=4.60.0
+docling>=0.1.0

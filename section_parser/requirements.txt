@@ -1,0 +1,2 @@
+# External dependencies for section_parser directory
+# No external dependencies found - only uses standard library and local modules

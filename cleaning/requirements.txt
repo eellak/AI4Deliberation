@@ -1,0 +1,4 @@
+# Requirements for cleaning
+pandas
+numpy
+text-cleaner-rs

@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import logging
+from pathlib import Path
 import argparse
 from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
@@ -21,23 +22,15 @@ from sqlalchemy import create_engine, event, text, or_, and_ # Added or_, and_
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.exc import SQLAlchemyError
 
-# Add paths for existing modules
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root = os.path.dirname(current_dir)
-sys.path.extend([
-    project_root,
-    os.path.join(project_root, 'ai4deliberation_pipeline'),
-])
-
 # Import configuration and utilities
-from config.config_manager import load_config
-from utils.logging_utils import setup_logging
-from utils.data_flow import ContentProcessor, ProcessedContent
-from utils.database import create_database_connection
+from ai4deliberation_pipeline.config.config_manager import load_config
+from ai4deliberation_pipeline.utils.logging_utils import setup_logging
+from ai4deliberation_pipeline.utils.data_flow import ContentProcessor, ProcessedContent
+from ai4deliberation_pipeline.utils.database import create_database_connection
 
 # Import unified modules
-from scraper.scrape_single_consultation import scrape_and_store
-from scraper.db_models import init_db, Consultation, Article, Document
+from ai4deliberation_pipeline.scraper.scrape_single_consultation import scrape_and_store
+from ai4deliberation_pipeline.scraper.db_models import init_db, Consultation, Article, Document
 
 # Import the discovery function
 # from scraper.list_consultations import get_all_consultations # No longer directly called, will run script
@@ -77,9 +70,11 @@ class PipelineOrchestrator:
         # Initialize content processor
         self.content_processor = ContentProcessor(self.config)
         
-        # Database path
+        # Paths
         self.database_path = self.config['database']['default_path']
-        self.list_consultations_script_path = os.path.join(project_root, 'scraper', 'list_consultations.py')
+        # Resolve repo root two levels up from this file
+        self.package_root = Path(__file__).resolve().parent.parent
+        self.list_consultations_script_path = self.package_root / 'scraper' / 'list_consultations.py'
         
         self.logger.info("Pipeline orchestrator initialized")
     
@@ -510,7 +505,7 @@ class PipelineOrchestrator:
 
         # Step 2: Read all_consultations.csv
         all_site_consultations_data = []
-        csv_path = os.path.join(project_root, 'all_consultations.csv')
+        csv_path = self.package_root / 'all_consultations.csv'
         if not os.path.exists(csv_path):
             self.logger.error(f"all_consultations.csv not found at {csv_path}. Cannot proceed.")
             return results
@@ -638,19 +633,42 @@ def main():
                         help="Pipeline mode: 'single' for one URL, 'update' for discovery and update.")
     parser.add_argument("--url", type=str, help="URL to process (for single mode)")
     parser.add_argument("--force-reprocess", action="store_true", help="Force reprocessing of all content for the given URL/consultation.")
+    parser.add_argument("--sync-db", action="store_true", help="Download, anonymise, and upload DB before executing pipeline.")
     
     args = parser.parse_args()
-    cfg = load_config() 
-    logger = setup_logging(cfg, "orchestrator_main_script") 
+    cfg = load_config()
+    logger = setup_logging(cfg, "orchestrator_main_script")
+
+    # Optional DB sync before pipeline run
+    if args.sync_db:
+        try:
+            from ai4deliberation_pipeline.utils.anonymizer import ensure_download_anonymise_upload
+            repo_id = "glossAPI/opengov.gr-diaboyleuseis"
+            filename = cfg['database']['default_path']
+            local_dir = os.path.dirname(filename) if os.path.dirname(filename) else os.getcwd()
+            logger.info("--sync-db flag detected. Running DB sync (download → anonymise → upload)…")
+            ensure_download_anonymise_upload(repo_id, filename, local_dir)
+        except Exception as sync_err:
+            logger.error(f"DB sync failed: {sync_err}")
+ 
+    
 
     logger.info(f"Running orchestrator in mode: {args.mode}")
     if args.mode == 'single' and args.url:
         logger.info(f"Processing single URL: {args.url}")
     
     try:
+        post_pipeline_upload_needed = args.sync_db
+
         if args.mode == "update":
             list_of_results = run_pipeline_entry(mode=args.mode, config_dict=cfg) # Expecting a list
             logger.info("Update mode finished.")
+            if post_pipeline_upload_needed:
+                try:
+                    from ai4deliberation_pipeline.utils.anonymizer import upload_db_to_hf
+                    upload_db_to_hf(repo_id, filename)
+                except Exception as up_err:
+                    logger.error(f"Post-pipeline upload failed: {up_err}")
             print(f"Update mode processing results: {len(list_of_results)} operations attempted.")
             for res_idx, res_item in enumerate(list_of_results):
                 print(f"Result {res_idx + 1}: {res_item}")
@@ -658,6 +676,12 @@ def main():
         else: # single mode
             pipeline_result_obj = run_pipeline_entry(mode=args.mode, url=args.url, config_dict=cfg, force_reprocess=args.force_reprocess)
             print(f"Single mode processing result: {pipeline_result_obj}")
+            if post_pipeline_upload_needed:
+                try:
+                    from ai4deliberation_pipeline.utils.anonymizer import upload_db_to_hf
+                    upload_db_to_hf(repo_id, filename)
+                except Exception as up_err:
+                    logger.error(f"Post-pipeline upload failed: {up_err}")
             sys.exit(0 if pipeline_result_obj.success else 1)
 
     except ValueError as ve:

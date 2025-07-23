@@ -1,0 +1,2 @@
+# Requirements for article_extraction_analysis
+pandas

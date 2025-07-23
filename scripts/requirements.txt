@@ -1,0 +1,2 @@
+# External dependencies for scripts directory
+pandas>=1.3.0

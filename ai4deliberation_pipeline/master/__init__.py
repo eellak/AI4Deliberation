@@ -6,6 +6,14 @@ Master Pipeline Module
 Core orchestration and integration for the AI4Deliberation pipeline.
 """
 
-from .pipeline_orchestrator import run_pipeline, process_consultation
+"""ai4deliberation_pipeline.master package init.
 
-__all__ = ['run_pipeline', 'process_consultation'] 
+Currently no public symbols exported; import the orchestrator module for side-effects only.
+"""
+
+from importlib import import_module as _imp
+
+# Ensure orchestrator module is importable without circular dependency issues
+_imp('ai4deliberation_pipeline.master.pipeline_orchestrator')
+
+__all__: list[str] = [] 
