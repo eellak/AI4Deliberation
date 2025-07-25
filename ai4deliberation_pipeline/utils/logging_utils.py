@@ -48,8 +48,15 @@ def setup_logging(config: Dict[str, Any], module_name: str = "ai4deliberation") 
     
     # File handler (if log directory exists)
     log_dir = config.get('directories', {}).get('logs')
-    if log_dir and os.path.exists(log_dir):
-        log_file = os.path.join(log_dir, f'{module_name}.log')
+    if log_dir:
+        # Create log directory if it doesn't exist
+        os.makedirs(log_dir, exist_ok=True)
+        
+        # Use pipeline_orchestrator.log specifically for the orchestrator
+        if module_name in ['pipeline_orchestrator', 'orchestrator_main_script']:
+            log_file = os.path.join(log_dir, 'pipeline_orchestrator.log')
+        else:
+            log_file = os.path.join(log_dir, f'{module_name}.log')
         
         # Rotating file handler
         max_size = log_config.get('max_file_size', 10) * 1024 * 1024  # MB to bytes
