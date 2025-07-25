@@ -1,0 +1,33 @@
+KEY THEMES ANALYSIS FROM cons1_stage1.csv
+===========================================
+
+UNIQUE KEY THEMES WITH FREQUENCY (ordered by frequency):
+--------------------------------------------------------
+      1 technology
+      1 social_enterprise
+      1 modern_technologies
+      1 judicial_decisions
+      1 innovation
+      1 digital_transformation
+      1 criminal_proceedings
+      1 broadening_of_beneficiaries
+      1 bar_associations
+
+SUMMARY:
+--------
+- Total unique themes: 9
+- All themes appear exactly 1 time each
+- Themes are in English and use underscore_format
+- Only a small subset of rows contain properly formatted key_themes
+
+UNIQUE THEMES LIST:
+------------------
+bar_associations
+broadening_of_beneficiaries
+criminal_proceedings
+digital_transformation
+innovation
+judicial_decisions
+modern_technologies
+social_enterprise
+technology

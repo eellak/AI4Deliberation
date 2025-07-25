@@ -1,0 +1,94 @@
+```mermaid
+flowchart TB
+    %% Define styles
+    classDef inputStyle fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    classDef geminiStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,stroke-dasharray: 5 5
+    classDef processStyle fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef criteriaStyle fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    classDef decisionStyle fill:#ffebee,stroke:#d32f2f,stroke-width:2px,shape:diamond
+    classDef scoreStyle fill:#fff9c4,stroke:#f9a825,stroke-width:2px
+
+    %% Input Sources
+    SUMMARIES[cons{N}_final_summary.txt<br/>Generated Summaries]:::inputStyle
+    DRYRUN[dry_run_cons_{N}.txt<br/>Original Legislation]:::inputStyle
+    DB[(SQLite Database<br/>Articles & Metadata)]:::inputStyle
+    
+    %% Evaluation Model
+    GEMINI[["🤖 Gemini 2.5 Pro<br/>Temperature: 0.0<br/>1M+ token context<br/>OR<br/>🤖 OpenAI GPT-4"]]:::geminiStyle
+    
+    %% Process Flow
+    SUMMARIES --> LOADER[Load Summary Files]:::processStyle
+    DRYRUN --> LEGIS[Load Legislation]:::processStyle
+    DB --> LEGIS
+    
+    LOADER --> CHECK{Evaluation<br/>Mode?}:::decisionStyle
+    LEGIS --> CHECK
+    
+    %% Two-Stage Process
+    CHECK -->|2-stage| STAGE1[Stage 1: Context Loading<br/>"Read and understand<br/>this legislation..."]:::processStyle
+    STAGE1 --> GEMINI
+    GEMINI --> CONFIRM[Model confirms<br/>understanding]
+    CONFIRM --> STAGE2[Stage 2: Evaluation<br/>"Evaluate this summary<br/>based on the document..."]:::processStyle
+    STAGE2 --> GEMINI
+    
+    %% Single-Stage Process
+    CHECK -->|1-stage| COMBINED[Combined Prompt<br/>Legislation + Summary<br/>+ Evaluation Request]:::processStyle
+    COMBINED --> GEMINI
+    
+    %% Evaluation Process
+    GEMINI --> EVAL[Generate JSON<br/>Evaluation Response]
+    
+    %% Criteria Evaluation
+    EVAL --> C1[Comprehension &<br/>Readability]:::criteriaStyle
+    EVAL --> C2[Factual<br/>Accuracy]:::criteriaStyle
+    EVAL --> C3[Content Coverage &<br/>Prioritization]:::criteriaStyle
+    EVAL --> C4[Civic Transparency &<br/>Neutrality]:::criteriaStyle
+    EVAL --> C5[Communication<br/>Efficiency]:::criteriaStyle
+    
+    %% Scoring
+    C1 --> S1[Score: 1-5<br/>+ Reasoning]:::scoreStyle
+    C2 --> S2[Score: 1-5<br/>+ Reasoning]:::scoreStyle
+    C3 --> S3[Score: 1-5<br/>+ Reasoning]:::scoreStyle
+    C4 --> S4[Score: 1-5<br/>+ Reasoning]:::scoreStyle
+    C5 --> S5[Score: 1-5<br/>+ Reasoning]:::scoreStyle
+    
+    %% Output Generation
+    S1 --> PARSE[Parse JSON<br/>Response]:::processStyle
+    S2 --> PARSE
+    S3 --> PARSE
+    S4 --> PARSE
+    S5 --> PARSE
+    
+    PARSE --> CSV[evaluation_results.csv<br/>Scores + Raw JSON]:::outputStyle
+    
+    %% Error Handling
+    GEMINI -.-> ERROR{Parse<br/>Error?}:::decisionStyle
+    ERROR -->|Yes| FALLBACK[String Extraction<br/>Fallback Parser]:::processStyle
+    ERROR -->|No| PARSE
+    FALLBACK --> PARSE
+    
+    %% Scoring Scale
+    subgraph "Scoring Scale"
+        direction LR
+        SC1[1 - Poor]
+        SC2[2 - Below Average]
+        SC3[3 - Average]
+        SC4[4 - Good]
+        SC5[5 - Excellent]
+    end
+    
+    %% Criteria Details
+    subgraph "Evaluation Criteria"
+        CR1[Clarity, Plain Language,<br/>Tone, Information Flow]
+        CR2[Factual Precision,<br/>No Hallucinations,<br/>Attribution]
+        CR3[Core Subjects,<br/>Purpose, Key Provisions,<br/>Outcomes]
+        CR4[Objectivity, Balance,<br/>No Interpretive Bias]
+        CR5[Conciseness, Density,<br/>Skimmability]
+    end
+    
+    %% CSV Output Example
+    subgraph "CSV Output Structure"
+        OUT[consultation_id | title | comprehension | accuracy | coverage | transparency | efficiency | timestamp | raw_json]
+    end
+```

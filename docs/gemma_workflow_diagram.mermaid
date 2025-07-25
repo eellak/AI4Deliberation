@@ -1,0 +1,98 @@
+```mermaid
+flowchart TB
+    %% Define styles
+    classDef inputStyle fill:#e1f5fe,stroke:#0288d1,stroke-width:2px
+    classDef stage1Style fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    classDef stage2Style fill:#ede7f6,stroke:#5e35b1,stroke-width:2px
+    classDef stage3Style fill:#e8eaf6,stroke:#3f51b5,stroke-width:2px
+    classDef polishStyle fill:#fce4ec,stroke:#c2185b,stroke-width:2px
+    classDef outputStyle fill:#e8f5e9,stroke:#388e3c,stroke-width:2px
+    classDef modelStyle fill:#fff3e0,stroke:#f57c00,stroke-width:3px,stroke-dasharray: 5 5
+    classDef decisionStyle fill:#ffebee,stroke:#d32f2f,stroke-width:2px,shape:diamond
+
+    %% Input Data
+    DB[(SQLite Database<br/>Greek Legislative<br/>Articles)]:::inputStyle
+    
+    %% Gemma Model
+    GEMMA[["🤖 Gemma 3 27B IT<br/>google/gemma-3-27b-it<br/>Temperature: 0.01<br/>Context: 8192 tokens"]]:::modelStyle
+    
+    %% Stage 1 Process
+    DB --> FETCH[Fetch Articles<br/>consultation_id]
+    FETCH --> PARSE[Parse Article<br/>Chunks]
+    
+    PARSE --> CLASSIFY{Classify<br/>Article Type}:::decisionStyle
+    
+    CLASSIFY -->|Σκοπός/Αντικείμενο| INTRO[Store Verbatim<br/>No Processing]:::stage1Style
+    CLASSIFY -->|References Laws| LAWMOD[Law Modification<br/>Processing]:::stage1Style
+    CLASSIFY -->|New Content| NEWPROV[New Provision<br/>Processing]:::stage1Style
+    
+    LAWMOD --> EXTRACT[Extract Quoted<br/>Segments]
+    EXTRACT --> GEMMA
+    GEMMA --> MODJSON[Generate JSON<br/>Summary ~20 words]
+    
+    NEWPROV --> GEMMA
+    GEMMA --> NEWJSON[Generate JSON<br/>Summary ~20 words]
+    
+    INTRO --> STAGE1CSV
+    MODJSON --> STAGE1CSV
+    NEWJSON --> STAGE1CSV
+    
+    STAGE1CSV[cons{N}_stage1.csv<br/>Article Summaries]:::outputStyle
+    
+    %% Stage 2 Process
+    STAGE1CSV --> GROUP[Group by<br/>Part + Chapter]
+    GROUP --> BULLETS[Format as<br/>Bullet Points]
+    BULLETS --> GEMMA
+    GEMMA --> CHAPSUM[Chapter Summary<br/>200-300 words]:::stage2Style
+    CHAPSUM --> STAGE2CSV[cons{N}_stage2.csv<br/>Chapter Summaries]:::outputStyle
+    
+    %% Stage 3 Process
+    STAGE2CSV --> PARTGROUP[Group by Part<br/>+ Intro Articles]
+    PARTGROUP --> NARRATIVE{Use Narrative<br/>Approach?}:::decisionStyle
+    
+    NARRATIVE -->|Yes| PLAN[Generate Narrative<br/>Plan (2-6 beats)]:::stage3Style
+    PLAN --> GEMMA
+    GEMMA --> PLANOUT[JSON Plan with<br/>beat_title & key_points]
+    PLANOUT --> BEATS[Generate Paragraph<br/>per Beat]:::stage3Style
+    BEATS --> GEMMA
+    GEMMA --> PARTSUM[Part Summary<br/>300-400 words]
+    
+    NARRATIVE -->|No/Failed| FALLBACK[Direct Summary<br/>Generation]:::stage3Style
+    FALLBACK --> GEMMA
+    GEMMA --> PARTSUM
+    
+    PARTSUM --> STAGE3CSV[cons{N}_stage3.csv<br/>Part Summaries]:::outputStyle
+    
+    %% Polish Stage
+    STAGE3CSV --> POLISH{Polish<br/>Enabled?}:::decisionStyle
+    POLISH -->|Yes| CITIZEN[Citizen-Friendly<br/>Refinement]:::polishStyle
+    CITIZEN --> GEMMA
+    GEMMA --> POLISHED[Grammar fixes<br/>Simplification<br/>Jargon removal]
+    POLISHED --> STAGE3UPDATE[Update stage3.csv<br/>citizen_summary_text]
+    
+    POLISH -->|No| FINAL
+    STAGE3UPDATE --> FINAL
+    
+    %% Final Assembly
+    FINAL[Final Assembly]
+    FINAL --> SORT[Sort Parts by<br/>Greek Numerals]
+    SORT --> LAWREFS[Extract Law<br/>Modifications]
+    LAWREFS --> CONCAT[Concatenate<br/>All Parts]
+    CONCAT --> FINALOUT[cons{N}_final_summary.txt<br/>Complete Summary]:::outputStyle
+    
+    %% Trace Logs
+    GEMMA -.-> TRACE[cons{N}_trace.log<br/>All prompts/outputs]:::outputStyle
+    GEMMA -.-> POLISHTRACE[cons{N}_polish_trace.log<br/>Polish prompts/outputs]:::outputStyle
+    
+    %% Add legend
+    subgraph Legend
+        L1[Input Data]:::inputStyle
+        L2[Stage 1]:::stage1Style
+        L3[Stage 2]:::stage2Style
+        L4[Stage 3]:::stage3Style
+        L5[Polish]:::polishStyle
+        L6[Output Files]:::outputStyle
+        L7[Gemma Model]:::modelStyle
+        L8[Decision Point]:::decisionStyle
+    end
+```

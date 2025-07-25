@@ -20,6 +20,7 @@ from .db_models import init_db, Ministry, Consultation, Article, Comment, Docume
 from .metadata_scraper import scrape_consultation_metadata
 from .content_scraper import scrape_consultation_content
 from .utils import get_request_headers
+from ..utils.anonymizer import pseudonymize_username, scrub_pii
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -245,12 +246,14 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
             ).first()
             
             if not existing_comment:
-                logger.info(f"Adding comment by {comment_data['username']}")
+                orig_user = comment_data['username']
+                pseudo_user = pseudonymize_username(orig_user)
+                logger.info(f"Adding comment by {orig_user} -> {pseudo_user}")
                 comment = Comment(
                     comment_id=comment_data['comment_id'],
-                    username=comment_data['username'],
+                    username=pseudo_user,
                     date=comment_data['date'],
-                    content=comment_data['content'],
+                    content=scrub_pii(comment_data['content'], {orig_user: pseudo_user}),
                     article_id=article.id
                 )
                 session.add(comment)

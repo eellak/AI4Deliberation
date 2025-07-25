@@ -665,7 +665,8 @@ def main():
             logger.info("Update mode finished.")
             if post_pipeline_upload_needed:
                 try:
-                    from ai4deliberation_pipeline.utils.anonymizer import upload_db_to_hf
+                    from ai4deliberation_pipeline.utils.anonymizer import anonymise_sqlite, upload_db_to_hf
+                    anonymise_sqlite(filename)
                     upload_db_to_hf(repo_id, filename)
                 except Exception as up_err:
                     logger.error(f"Post-pipeline upload failed: {up_err}")
@@ -678,7 +679,8 @@ def main():
             print(f"Single mode processing result: {pipeline_result_obj}")
             if post_pipeline_upload_needed:
                 try:
-                    from ai4deliberation_pipeline.utils.anonymizer import upload_db_to_hf
+                    from ai4deliberation_pipeline.utils.anonymizer import anonymise_sqlite, upload_db_to_hf
+                    anonymise_sqlite(filename)
                     upload_db_to_hf(repo_id, filename)
                 except Exception as up_err:
                     logger.error(f"Post-pipeline upload failed: {up_err}")
