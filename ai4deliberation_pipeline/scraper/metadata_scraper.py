@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 def scrape_consultation_metadata(url):
     """Scrape metadata about a consultation/legislation and return structured data for DB"""
     try:
+        # Preserve the originally requested URL/post_id (used if redirects strip the query)
+        original_url = url
+        original_post_id = extract_post_id(original_url)
+        
         # Fetch the HTML content
         logger.info(f"Fetching URL: {url}")
         response = requests.get(url, headers=get_request_headers(), timeout=30, allow_redirects=True)
@@ -44,7 +48,8 @@ def scrape_consultation_metadata(url):
         
         # Initialize metadata dictionary
         metadata = {
-            'post_id': extract_post_id(url),  # Now using the final URL after redirects
+            # Prefer the post_id from the final URL; fall back to the original if lost in redirect
+            'post_id': extract_post_id(url) or original_post_id,
             'title': '',
             'start_minister_message': '',
             'end_minister_message': '',
@@ -150,6 +155,7 @@ def scrape_consultation_metadata(url):
         
         # 4. Get comment statistics
         try:
+            # First, look for explicit “Όλα τα Σχόλια” labels in sidespots
             sidespots = soup.find_all('div', class_='sidespot')
             for spot in sidespots:
                 # Skip colored spots
@@ -158,10 +164,7 @@ def scrape_consultation_metadata(url):
                 
                 spot_text = spot.get_text()
                 
-                # Try multiple patterns for comment statistics
-                # Removed accepted comments extraction - will be calculated from article comments instead
-                
-                # Pattern for total comments
+                # Try multiple patterns for comment statistics (site-reported total)
                 total_patterns = [
                     r'(\d+)\s+-\s+Όλα\s+τα\s+Σχόλια',
                     r'(\d+)\s+-\s+Όλα\s+τα\s+σχόλια',
@@ -177,8 +180,20 @@ def scrape_consultation_metadata(url):
                         logger.info(f"Found total comments: {metadata['total_comments']}")
                         break
             
-            # Removed fallback using accepted_comments
-                
+            # If not found, look for explicit “Όλα τα Σχόλια” / “Σχόλια” labels elsewhere (legacy templates)
+            if metadata['total_comments'] == 0:
+                label_candidates = []
+                # Legacy classes often used for consultation-level counts
+                for sel in ['span.comments_cons', 'span.list_comments', 'a.list_comments', 'span.list_comments_link', 'span.comments']:
+                    for el in soup.select(sel):
+                        txt = el.get_text(" ", strip=True)
+                        m = re.search(r'(\d+)\s+Σχόλια', txt, re.IGNORECASE)
+                        if m:
+                            label_candidates.append(int(m.group(1)))
+                if label_candidates:
+                    metadata['total_comments'] = max(label_candidates)
+                    logger.info(f"Found total comments via legacy labels: {metadata['total_comments']}")
+            
             # Check comment links to try another approach if needed
             if metadata['total_comments'] == 0:
                 comment_links = soup.find_all('a', href=re.compile(r'allcomments'))

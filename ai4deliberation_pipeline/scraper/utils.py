@@ -94,8 +94,11 @@ def find_element_with_fallbacks(soup, selectors):
 def extract_post_id(url):
     """Extract the post ID from a URL"""
     try:
-        if '?p=' in url:
-            return url.split('?p=')[1].split('&')[0]
+        if not url:
+            return None
+        cleaned = url.strip()
+        if '?p=' in cleaned:
+            return cleaned.split('?p=')[1].split('&')[0]
         return None
     except Exception:
         return None

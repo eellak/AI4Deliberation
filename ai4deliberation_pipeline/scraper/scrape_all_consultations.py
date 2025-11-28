@@ -52,12 +52,25 @@ def get_consultation_links_from_page(url):
         
         for item in list_items:
             try:
-                # Extract the link and title
-                link_element = item.find('p').find('a')
+                # Extract the link and title using flexible selectors (align with list_consultations)
+                link_element = None
+                for candidate in [
+                    item.find('a'),
+                    item.find('p').find('a') if item.find('p') else None,
+                    item.find('h2').find('a') if item.find('h2') else None,
+                    item.find('h3').find('a') if item.find('h3') else None,
+                ]:
+                    if candidate and candidate.has_attr('href') and candidate.get_text(strip=True):
+                        link_element = candidate
+                        break
+                
                 if not link_element:
+                    logger.warning(f"Could not find a suitable link/title element in list item: {item.get_text(strip=True)[:100]}...")
                     continue
                 
-                consultation_url = link_element['href']
+                # Normalize/truncate href (handles trailing spaces and relatives)
+                raw_href = link_element['href'].strip()
+                consultation_url = urljoin(url, raw_href)
                 consultation_title = link_element.get_text(strip=True)
                 
                 # Extract the date (optional)

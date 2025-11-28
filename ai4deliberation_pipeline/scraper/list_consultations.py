@@ -73,30 +73,30 @@ def get_consultation_links_from_page(url, latest_known_date=None):
         
         for item in list_items:
             try:
-                # Extract the link and title
-                link_element = item.find('a')
+                # Extract the link and title using multiple fallbacks
+                link_element = None
+                for candidate in [
+                    item.find('a'),
+                    item.find('p').find('a') if item.find('p') else None,
+                    item.find('h2').find('a') if item.find('h2') else None,
+                    item.find('h3').find('a') if item.find('h3') else None,
+                ]:
+                    if candidate and candidate.has_attr('href') and candidate.get_text(strip=True):
+                        link_element = candidate
+                        break
 
-                if not link_element or not link_element.has_attr('href'):
-                    if item.find('p') and item.find('p').find('a'):
-                        link_element = item.find('p').find('a')
-                    elif item.find('h2') and item.find('h2').find('a'):
-                        link_element = item.find('h2').find('a')
-                    elif item.find('h3') and item.find('h3').find('a'):
-                        link_element = item.find('h3').find('a')
-
-                if not link_element or not link_element.has_attr('href') or not link_element.get_text(strip=True):
+                if not link_element:
                     logger.warning(f"Could not find a suitable link/title element in list item: {item.get_text(strip=True)[:100]}...")
                     continue
                 
-                consultation_url = link_element['href']
+                raw_href = link_element['href'].strip()
+                consultation_url = urljoin(url, raw_href)
                 consultation_title = link_element.get_text(strip=True)
                 
-                # --- Validate URL structure ---
-                # Expected pattern: http://www.opengov.gr/{any_path_part}/?p={digits}
-                # or https://www.opengov.gr/{any_path_part}/?p={digits}
-                url_pattern = r"https?://www\.opengov\.gr/.+?/\?p=\d+"
+                # --- Validate URL structure (relaxed: allow redirects/trimmed links, still require opengov host) ---
+                url_pattern = r"https?://www\.opengov\.gr/.+"
                 if not re.match(url_pattern, consultation_url):
-                    logger.warning(f"Skipping URL with invalid structure: {consultation_url} (Title: {consultation_title})")
+                    logger.warning(f"Skipping URL with unexpected host/structure: {consultation_url} (Title: {consultation_title})")
                     continue
                 # --- End URL validation ---
                 

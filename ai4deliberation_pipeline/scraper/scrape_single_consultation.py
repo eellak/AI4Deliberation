@@ -181,7 +181,13 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
     articles_data = scrape_consultation_content(url)
     if not articles_data:
         logger.error(f"Failed to scrape articles from {url}")
-        # Continue anyway, as we might have metadata
+        articles_data = []
+    
+    # If we have neither articles nor a title, abort to avoid storing empty shells from redirects
+    if not articles_data and not consultation_data.get('title'):
+        logger.error(f"No articles or title found for {url}; skipping creation to avoid empty record.")
+        session.rollback()
+        return False, None
         
     # If we're doing a selective update of an unfinished consultation that is now finished,
     # record this status change
