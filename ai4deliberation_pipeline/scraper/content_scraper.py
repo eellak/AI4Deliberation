@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import csv
+from pathlib import Path
 import logging
 import requests
 from bs4 import BeautifulSoup
@@ -9,9 +10,8 @@ import time
 from random import uniform
 import re
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit, urlunsplit, parse_qsl, urlencode
 
-# Use local utils module
 from .utils import (
     parse_greek_date, 
     extract_content_text, 
@@ -25,6 +25,152 @@ from .utils import (
 # Set up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+def set_query_param(url, key, value):
+    """Set or replace a query parameter in a URL and keep #comments fragment."""
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query[key] = str(value)
+    return urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        parts.path,
+        urlencode(query),
+        "comments"
+    ))
+
+
+def fetch_page_soup(url):
+    """Fetch a page and return BeautifulSoup plus final URL after redirects."""
+    response = requests.get(url, headers=get_request_headers(), timeout=30, allow_redirects=True)
+    response.raise_for_status()
+    return BeautifulSoup(response.content, 'html.parser'), response.url
+
+
+def discover_comment_page_urls(soup, article_url):
+    """
+    Discover all comment pagination pages from the current article page.
+    If no pagination exists, return just the article URL.
+    """
+    page_numbers = []
+
+    for el in soup.select("div.nav a.page-numbers, div.nav span.page-numbers.current"):
+        txt = el.get_text(strip=True)
+        if txt.isdigit():
+            page_numbers.append(int(txt))
+
+    max_page = max(page_numbers) if page_numbers else 1
+
+    urls = [article_url]
+    if max_page > 1:
+        for n in range(1, max_page + 1):
+            urls.append(set_query_param(article_url, "cpage", n))
+
+    # deduplicate, preserve order
+    seen = set()
+    unique_urls = []
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            unique_urls.append(u)
+
+    logger.info(f"Discovered {len(unique_urls)} comment page(s) for {article_url}")
+    return unique_urls
+
+
+def extract_comments_from_single_page(soup, include_author=False):
+    """
+    Extract comments from one HTML page only.
+    Safer for opengov.gr structure:
+    - list: ul.comment_list / ol.comment_list
+    - comment node: li[id^='comment-']
+    - content: direct <p> tags of each li
+    """
+    comments = []
+
+    comment_section_selectors = [
+        'div#comments',
+        'div.comments-template',
+        'div.comments_template',
+        'div.comments-area',
+        'div.comments'
+    ]
+    comments_div = find_element_with_fallbacks(soup, comment_section_selectors)
+    if not comments_div:
+        logger.warning("No comments section found")
+        return comments
+
+    comment_nodes = comments_div.select(
+        "ul.comment_list > li[id^='comment-'], "
+        "ol.comment_list > li[id^='comment-'], "
+        "ul.commentlist > li[id^='comment-'], "
+        "ol.commentlist > li[id^='comment-']"
+    )
+
+    logger.info(f"Found {len(comment_nodes)} raw comment nodes on current page")
+
+    for item in comment_nodes:
+        try:
+            comment_id = item.get('id', '').replace('comment-', '').strip()
+            if not comment_id:
+                continue
+
+            author_div = item.select_one("div.user div.author, div.author")
+            permalink_tag = item.select_one("div.meta-comment a.permalink, a.permalink")
+
+            date_obj = None
+            username = None
+
+            if author_div:
+                author_text = author_div.get_text(" ", strip=True)
+
+                date_match = re.search(
+                    r'(\d+\s+[Α-Ωα-ωίϊΐόάέύϋΰήώ]+\s+\d{4},\s+\d{1,2}:\d{2})',
+                    author_text
+                )
+                if date_match:
+                    date_str = date_match.group(1).strip()
+                    date_obj = parse_greek_date(date_str)
+
+                if include_author:
+                    strong_tag = author_div.find('strong')
+                    if strong_tag:
+                        username = strong_tag.get_text(" ", strip=True)
+                    else:
+                        username = "Anonymous"
+
+            # direct paragraphs only, not nested descendants
+            p_tags = item.find_all('p', recursive=False)
+            parts = [p.get_text(" ", strip=True) for p in p_tags if p.get_text(" ", strip=True)]
+            content = "\n".join(parts).strip()
+
+            # fallback
+            if not content:
+                item_copy = BeautifulSoup(str(item), 'html.parser').find('li')
+                if item_copy:
+                    for junk in item_copy.select("div.user, div.meta-comment, a.permalink, div.rate"):
+                        junk.decompose()
+                    content = item_copy.get_text(" ", strip=True)
+                else:
+                    content = ""
+
+            if content:
+                row = {
+                    'comment_id': comment_id,
+                    'date': date_obj,
+                    'content': content,
+                    'permalink': permalink_tag['href'] if permalink_tag and permalink_tag.has_attr('href') else None
+                }
+
+                if include_author:
+                    row['username'] = username or "Anonymous"
+
+                comments.append(row)
+
+        except Exception as e:
+            logger.error(f"Error processing comment node: {e}")
+
+    return comments
 
 def extract_article_links(url):
     """Extract article links from a consultation page using a simplified approach"""
@@ -166,9 +312,47 @@ def scrape_article_content(article_url):
         logger.error(f"Error scraping article content: {e}")
         return None
 
-def extract_comments(soup, article_url):
-    """Extract comments from the article page with a simplified approach"""
-    comments = []
+def extract_comments(soup, article_url, delay_range=(0.15, 0.25), include_author=False):
+    """
+    Extract comments from all comment pages of an article.
+    Deduplicate by comment_id.
+    """
+    all_comments = []
+    seen_comment_ids = set()
+
+    try:
+        page_urls = discover_comment_page_urls(soup, article_url)
+
+        for i, page_url in enumerate(page_urls):
+            try:
+                if i == 0:
+                    page_soup = soup
+                else:
+                    delay = uniform(*delay_range)
+                    logger.info(f"Waiting {delay:.2f} seconds before fetching comment page {page_url}")
+                    time.sleep(delay)
+                    page_soup, _ = fetch_page_soup(page_url)
+
+                page_comments = extract_comments_from_single_page(
+                    page_soup,
+                    include_author=include_author
+                )
+
+                for comment in page_comments:
+                    cid = comment['comment_id']
+                    if cid not in seen_comment_ids:
+                        seen_comment_ids.add(cid)
+                        all_comments.append(comment)
+
+            except Exception as e:
+                logger.error(f"Error while scraping comment page {page_url}: {e}")
+
+        logger.info(f"Extracted {len(all_comments)} unique comments from {article_url}")
+        return all_comments
+
+    except Exception as e:
+        logger.error(f"Error extracting comments: {e}")
+        return all_comments
     
     try:
         # Find the comments section with fallback selectors
@@ -367,24 +551,66 @@ def scrape_consultation_content(consultation_url, delay_range=(0.15, 0.25)):
     except Exception as e:
         logger.error(f"Error scraping consultation content: {e}")
         return []
+    
+def save_comments_to_csv(articles, consultation_url, out_path):
+    """Save all scraped comments to a flat CSV file."""
+    rows = []
+
+    for article in articles:
+        for comment in article.get("comments", []):
+            rows.append({
+                "consultation_url": consultation_url,
+                "article_url": article.get("url"),
+                "article_post_id": article.get("post_id"),
+                "article_title": article.get("title"),
+                "comment_id": comment.get("comment_id"),
+                "comment_date": comment.get("date").isoformat() if comment.get("date") else None,
+                "comment_permalink": comment.get("permalink"),
+                "comment_content": comment.get("content"),
+            })
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(out_path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=[
+                "consultation_url",
+                "article_url",
+                "article_post_id",
+                "article_title",
+                "comment_id",
+                "comment_date",
+                "comment_permalink",
+                "comment_content",
+            ],
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+    logger.info(f"Saved {len(rows)} comments to {out_path}")
 
 if __name__ == "__main__":
-    # Example usage
-    test_url = "http://www.opengov.gr/ministryofjustice/?p=17805"
-    articles = scrape_consultation_content(test_url)
-    
-    if articles:
-        print(f"\nScraped {len(articles)} articles with a total of {sum(len(a['comments']) for a in articles)} comments")
-        for i, article in enumerate(articles[:3]):  # Print details for first 3 articles
-            print(f"\nArticle {i+1}: {article['title']}")
-            print(f"  ID: {article['post_id']}")
-            print(f"  URL: {article['url']}")
-            print(f"  Content length: {len(article['raw_html'])} chars")
-            print(f"  Comments: {len(article['comments'])}")
-            
-            # Print first 2 comments if any
-            for j, comment in enumerate(article['comments'][:2]):
-                print(f"    Comment {j+1}: {comment['username']} ({comment['date']})")
-                print(f"      Content: {comment['content'][:100]}...")
-        
-        print("\n(Showing only first 3 articles and 2 comments per article)")
+    test_urls = [
+        "http://www.opengov.gr/ministryofjustice/?p=17805",
+        "http://www.opengov.gr/ministryofjustice/?p=18058",
+    ]
+
+    output_dir = Path("test_outputs")
+    output_dir.mkdir(exist_ok=True)
+
+    for test_url in test_urls:
+        print(f"\n=== Testing consultation: {test_url} ===")
+        articles = scrape_consultation_content(test_url)
+
+        if articles:
+            post_id = extract_post_id(test_url) or "consultation"
+            out_path = output_dir / f"{post_id}_comments.csv"
+            save_comments_to_csv(articles, test_url, out_path)
+
+            total_comments = sum(len(a["comments"]) for a in articles)
+            print(f"Scraped {len(articles)} articles with {total_comments} total comments")
+            print(f"Saved CSV to: {out_path}")
+        else:
+            print("No articles returned.")

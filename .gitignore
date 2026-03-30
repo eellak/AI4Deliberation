@@ -1,2 +1,2 @@
 *.db
-*.csv 
+*.csv .venv/
