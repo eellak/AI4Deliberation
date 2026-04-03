@@ -589,25 +589,23 @@ def save_comments_to_csv(articles, consultation_url, out_path):
     logger.info(f"Saved {len(rows)} comments to {out_path}")
 
 if __name__ == "__main__":
-    test_urls = [
-        "http://www.opengov.gr/ministryofjustice/?p=17805",
-        "http://www.opengov.gr/ministryofjustice/?p=18058",
-    ]
+    test_url = "http://www.opengov.gr/ministryofjustice/?p=18058"  # example URL with many comments
+    articles = scrape_consultation_content(test_url)
 
-    output_dir = Path("test_outputs")
-    output_dir.mkdir(exist_ok=True)
+    if articles:
+        print(
+            f"\nScraped {len(articles)} articles with a total of "
+            f"{sum(len(a['comments']) for a in articles)} comments"
+        )
+        for i, article in enumerate(articles[:3]):
+            print(f"\nArticle {i+1}: {article['title']}")
+            print(f"  ID: {article['post_id']}")
+            print(f"  URL: {article['url']}")
+            print(f"  Content length: {len(article.get('raw_html', ''))} chars")
+            print(f"  Comments: {len(article['comments'])}")
 
-    for test_url in test_urls:
-        print(f"\n=== Testing consultation: {test_url} ===")
-        articles = scrape_consultation_content(test_url)
+            for j, comment in enumerate(article['comments'][:2]):
+                print(f"    Comment {j+1}: {comment.get('username', 'ANONYMIZED')} ({comment['date']})")
+                print(f"      Content: {comment['content'][:100]}...")
 
-        if articles:
-            post_id = extract_post_id(test_url) or "consultation"
-            out_path = output_dir / f"{post_id}_comments.csv"
-            save_comments_to_csv(articles, test_url, out_path)
-
-            total_comments = sum(len(a["comments"]) for a in articles)
-            print(f"Scraped {len(articles)} articles with {total_comments} total comments")
-            print(f"Saved CSV to: {out_path}")
-        else:
-            print("No articles returned.")
+        print("\n(Showing only first 3 articles and 2 comments per article)")
