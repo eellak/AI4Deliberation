@@ -154,18 +154,15 @@ def extract_comments_from_single_page(soup, include_author=False):
                 else:
                     content = ""
 
-            if content:
-                row = {
-                    'comment_id': comment_id,
-                    'date': date_obj,
-                    'content': content,
-                    'permalink': permalink_tag['href'] if permalink_tag and permalink_tag.has_attr('href') else None
-                }
+            row = {
+                'comment_id': comment_id,
+                'username': (username or "ANONYMIZED") if include_author else "ANONYMIZED",
+                'date': date_obj,
+                'content': content,
+                'permalink': permalink_tag['href'] if permalink_tag and permalink_tag.has_attr('href') else None
+                    }
 
-                if include_author:
-                    row['username'] = username or "Anonymous"
-
-                comments.append(row)
+            comments.append(row)
 
         except Exception as e:
             logger.error(f"Error processing comment node: {e}")
