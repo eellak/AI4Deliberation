@@ -25,6 +25,62 @@ from .utils import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+CONSULTATION_COMMENT_PATTERNS = [
+    r'(\d+)\s+Σχόλι(?:ο|α)\s+επ[ίι]\s+της\s+Διαβούλευσης',
+    r'(\d+)\s+σχόλι(?:ο|α)\s+επ[ίι]\s+της\s+διαβούλευσης',
+]
+
+ALL_COMMENTS_PATTERNS = [
+    r'(\d+)\s+-\s+Όλα\s+τα\s+Σχόλια',
+    r'(\d+)\s+-\s+Όλα\s+τα\s+σχόλια',
+    r'(\d+)\s+σχόλια\s+συνολικά',
+    r'(\d+)\s+Σχόλια\s+συνολικά',
+    r'συνολικά\s+(\d+)\s+σχόλια'
+]
+
+
+def extract_total_comments_from_soup(soup):
+    """Prefer consultation-specific counts over broader all-comments aggregates."""
+    try:
+        sidespots = soup.find_all('div', class_='sidespot')
+        candidate_texts = []
+
+        for spot in sidespots:
+            classes = spot.get('class', [])
+            if 'red_spot' in classes or 'orange_spot' in classes:
+                continue
+            candidate_texts.append(spot.get_text(" ", strip=True))
+
+        candidate_texts.extend(
+            el.get_text(" ", strip=True)
+            for sel in ['span.comments_cons', 'span.list_comments', 'a.list_comments', 'span.list_comments_link', 'span.comments']
+            for el in soup.select(sel)
+        )
+
+        for text in candidate_texts:
+            for pattern in CONSULTATION_COMMENT_PATTERNS:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+
+        for text in candidate_texts:
+            for pattern in ALL_COMMENTS_PATTERNS:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    return int(match.group(1))
+
+        comment_links = soup.find_all('a', href=re.compile(r'allcomments'))
+        for link in comment_links:
+            link_text = link.get_text(" ", strip=True)
+            total_match = re.search(r'(\d+)', link_text)
+            if total_match:
+                return int(total_match.group(1))
+    except Exception as e:
+        logger.error(f"Error extracting comment statistics: {e}")
+
+    return 0
+
+
 def scrape_consultation_metadata(url):
     """Scrape metadata about a consultation/legislation and return structured data for DB"""
     try:
@@ -154,58 +210,9 @@ def scrape_consultation_metadata(url):
                     logger.info(f"Found document: {doc_title} ({doc_type})")
         
         # 4. Get comment statistics
-        try:
-            # First, look for explicit “Όλα τα Σχόλια” labels in sidespots
-            sidespots = soup.find_all('div', class_='sidespot')
-            for spot in sidespots:
-                # Skip colored spots
-                if 'red_spot' in spot.get('class', []) or 'orange_spot' in spot.get('class', []):
-                    continue
-                
-                spot_text = spot.get_text()
-                
-                # Try multiple patterns for comment statistics (site-reported total)
-                total_patterns = [
-                    r'(\d+)\s+-\s+Όλα\s+τα\s+Σχόλια',
-                    r'(\d+)\s+-\s+Όλα\s+τα\s+σχόλια',
-                    r'(\d+)\s+σχόλια\s+συνολικά',
-                    r'(\d+)\s+Σχόλια\s+συνολικά',
-                    r'συνολικά\s+(\d+)\s+σχόλια'
-                ]
-                
-                for pattern in total_patterns:
-                    total_match = re.search(pattern, spot_text)
-                    if total_match:
-                        metadata['total_comments'] = int(total_match.group(1))
-                        logger.info(f"Found total comments: {metadata['total_comments']}")
-                        break
-            
-            # If not found, look for explicit “Όλα τα Σχόλια” / “Σχόλια” labels elsewhere (legacy templates)
-            if metadata['total_comments'] == 0:
-                label_candidates = []
-                # Legacy classes often used for consultation-level counts
-                for sel in ['span.comments_cons', 'span.list_comments', 'a.list_comments', 'span.list_comments_link', 'span.comments']:
-                    for el in soup.select(sel):
-                        txt = el.get_text(" ", strip=True)
-                        m = re.search(r'(\d+)\s+Σχόλια', txt, re.IGNORECASE)
-                        if m:
-                            label_candidates.append(int(m.group(1)))
-                if label_candidates:
-                    metadata['total_comments'] = max(label_candidates)
-                    logger.info(f"Found total comments via legacy labels: {metadata['total_comments']}")
-            
-            # Check comment links to try another approach if needed
-            if metadata['total_comments'] == 0:
-                comment_links = soup.find_all('a', href=re.compile(r'allcomments'))
-                for link in comment_links:
-                    link_text = link.get_text()
-                    total_match = re.search(r'(\d+)', link_text)
-                    if total_match:
-                        metadata['total_comments'] = int(total_match.group(1))
-                        logger.info(f"Found total comments from link: {metadata['total_comments']}")
-                        break
-        except Exception as e:
-            logger.error(f"Error extracting comment statistics: {e}")
+        metadata['total_comments'] = extract_total_comments_from_soup(soup)
+        if metadata['total_comments']:
+            logger.info(f"Found total comments: {metadata['total_comments']}")
         
         # 5. Get title and minister messages
         try:

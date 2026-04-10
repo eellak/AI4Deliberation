@@ -17,6 +17,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # Import our modules
 from .db_models import init_db, Ministry, Consultation, Article, Comment, Document, Base
+from .consultation_matching import find_existing_consultation
 from .metadata_scraper import scrape_consultation_metadata
 from .content_scraper import scrape_consultation_content
 from .utils import get_request_headers
@@ -74,25 +75,13 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
     # Step 3: Strict consultation existence check
     # post_id was already validated above
     post_id = consultation_data['post_id']
-    
-    # STRICT DUPLICATE PREVENTION: Check by URL first (most reliable), then by post_id
-    normalized_url = url.replace('http://', '').replace('https://', '')
-    
-    # Primary check: Look for existing consultation by normalized URL
-    existing_consultation = None
-    consultations = session.query(Consultation).all()
-    for cons in consultations:
-        norm_cons_url = cons.url.replace('http://', '').replace('https://', '')
-        if norm_cons_url == normalized_url:
-            existing_consultation = cons
-            logger.info(f"Found existing consultation by URL match: {cons.title}")
-            break
-    
-    # Secondary check: If not found by URL, check by post_id as backup
-    if not existing_consultation:
-        existing_consultation = session.query(Consultation).filter_by(post_id=post_id).first()
-        if existing_consultation:
-            logger.info(f"Found existing consultation by post_id match: {existing_consultation.title}")
+    existing_consultation = find_existing_consultation(
+        session,
+        Consultation,
+        url,
+        post_id,
+        logger=logger,
+    )
     
     # STRICT HANDLING LOGIC
     if existing_consultation:

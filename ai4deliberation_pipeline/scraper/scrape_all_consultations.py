@@ -9,12 +9,13 @@ from random import uniform
 from datetime import datetime
 from bs4 import BeautifulSoup
 import requests
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 # Import our modules
 from .db_models import Ministry, Consultation, Article, Comment, Document, init_db
+from .consultation_matching import find_existing_consultation
 from .metadata_scraper import scrape_consultation_metadata
 from .content_scraper import scrape_consultation_content
 from .scrape_single_consultation import scrape_and_store
@@ -26,35 +27,6 @@ logger = logging.getLogger(__name__)
 # Constants
 BASE_URL = "https://www.opengov.gr/home/category/consultations"
 REQUEST_DELAY = (0.15, 0.25)  # Random delay between requests in seconds
-
-
-def normalize_consultation_url(url):
-    """Normalize URL for robust matching across http/https and trailing slash differences."""
-    if not url:
-        return None
-    try:
-        parsed = urlparse(url.strip())
-        netloc = parsed.netloc.lower()
-        path = parsed.path or ""
-        if path != "/" and path.endswith("/"):
-            path = path.rstrip("/")
-        query = parsed.query or ""
-        if query:
-            return f"{netloc}{path}?{query}"
-        return f"{netloc}{path}"
-    except Exception:
-        return None
-
-
-def extract_ministry_code_from_url(url):
-    """Extract ministry code from URL path, e.g. '/yme/?p=5739' -> 'yme'."""
-    try:
-        parsed = urlparse((url or "").strip())
-        path_parts = [part for part in parsed.path.strip("/").split("/") if part]
-        return path_parts[0].lower() if path_parts else None
-    except Exception:
-        return None
-
 
 def get_consultation_links_from_page(url):
     """Extract all consultation links and titles from a page"""
@@ -254,36 +226,13 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
             # Check if this consultation already exists in the database
             existing = None
             if not force_scrape:
-                # Match by normalized URL first to avoid post_id collisions across ministries.
-                normalized_url = normalize_consultation_url(url)
-                if normalized_url:
-                    existing_consultations = session.query(Consultation).all()
-                    for cons in existing_consultations:
-                        if normalize_consultation_url(cons.url) == normalized_url:
-                            existing = cons
-                            break
-
-                # Fallback to post_id only if URL did not match.
-                if not existing and post_id:
-                    post_id_matches = session.query(Consultation).filter_by(post_id=post_id).all()
-                    if len(post_id_matches) == 1:
-                        existing = post_id_matches[0]
-                    elif len(post_id_matches) > 1:
-                        target_ministry = extract_ministry_code_from_url(url)
-                        ministry_matches = [
-                            cons for cons in post_id_matches
-                            if extract_ministry_code_from_url(cons.url) == target_ministry
-                        ]
-                        if ministry_matches:
-                            existing = ministry_matches[0]
-                        else:
-                            # Defensive fallback: prefer unfinished, then first.
-                            unfinished = [cons for cons in post_id_matches if not cons.is_finished]
-                            existing = unfinished[0] if unfinished else post_id_matches[0]
-                        logger.warning(
-                            f"Found {len(post_id_matches)} consultations with post_id={post_id}; "
-                            f"selected URL={existing.url}"
-                        )
+                existing = find_existing_consultation(
+                    session,
+                    Consultation,
+                    url,
+                    post_id,
+                    logger=logger,
+                )
             
             if existing and not force_scrape:
                 # Only skip if the consultation is already finished

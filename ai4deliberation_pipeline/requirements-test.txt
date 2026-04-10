@@ -1,0 +1,4 @@
+pytest
+sqlalchemy
+requests
+beautifulsoup4
