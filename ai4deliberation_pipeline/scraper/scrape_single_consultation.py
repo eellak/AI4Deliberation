@@ -251,10 +251,10 @@ def scrape_and_store(url, session, selective_update=False, existing_cons=None):
             ).first()
             
             if not existing_comment:
-                logger.info(f"Adding comment by {comment_data['username']}")
+                logger.info(f"Adding comment by {comment_data.get('username', 'ANONYMIZED')}")
                 comment = Comment(
                     comment_id=comment_data['comment_id'],
-                    username=comment_data['username'],
+                    username=comment_data.get('username', 'ANONYMIZED'),
                     date=comment_data['date'],
                     content=comment_data['content'],
                     article_id=article.id
