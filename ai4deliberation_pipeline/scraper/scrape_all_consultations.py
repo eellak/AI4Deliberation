@@ -9,7 +9,7 @@ from random import uniform
 from datetime import datetime
 from bs4 import BeautifulSoup
 import requests
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -26,6 +26,34 @@ logger = logging.getLogger(__name__)
 # Constants
 BASE_URL = "https://www.opengov.gr/home/category/consultations"
 REQUEST_DELAY = (0.15, 0.25)  # Random delay between requests in seconds
+
+
+def normalize_consultation_url(url):
+    """Normalize URL for robust matching across http/https and trailing slash differences."""
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url.strip())
+        netloc = parsed.netloc.lower()
+        path = parsed.path or ""
+        if path != "/" and path.endswith("/"):
+            path = path.rstrip("/")
+        query = parsed.query or ""
+        if query:
+            return f"{netloc}{path}?{query}"
+        return f"{netloc}{path}"
+    except Exception:
+        return None
+
+
+def extract_ministry_code_from_url(url):
+    """Extract ministry code from URL path, e.g. '/yme/?p=5739' -> 'yme'."""
+    try:
+        parsed = urlparse((url or "").strip())
+        path_parts = [part for part in parsed.path.strip("/").split("/") if part]
+        return path_parts[0].lower() if path_parts else None
+    except Exception:
+        return None
 
 
 def get_consultation_links_from_page(url):
@@ -225,18 +253,37 @@ def scrape_consultations_to_db(consultation_links, db_url, batch_size=20, max_co
             
             # Check if this consultation already exists in the database
             existing = None
-            if not force_scrape and post_id:
-                existing = session.query(Consultation).filter_by(post_id=post_id).first()
-                
-                # If not found by post_id, try with URL
-                if not existing:
-                    normalized_url = url.replace('http://', '').replace('https://', '')
+            if not force_scrape:
+                # Match by normalized URL first to avoid post_id collisions across ministries.
+                normalized_url = normalize_consultation_url(url)
+                if normalized_url:
                     existing_consultations = session.query(Consultation).all()
                     for cons in existing_consultations:
-                        norm_cons_url = cons.url.replace('http://', '').replace('https://', '')
-                        if norm_cons_url == normalized_url:
+                        if normalize_consultation_url(cons.url) == normalized_url:
                             existing = cons
                             break
+
+                # Fallback to post_id only if URL did not match.
+                if not existing and post_id:
+                    post_id_matches = session.query(Consultation).filter_by(post_id=post_id).all()
+                    if len(post_id_matches) == 1:
+                        existing = post_id_matches[0]
+                    elif len(post_id_matches) > 1:
+                        target_ministry = extract_ministry_code_from_url(url)
+                        ministry_matches = [
+                            cons for cons in post_id_matches
+                            if extract_ministry_code_from_url(cons.url) == target_ministry
+                        ]
+                        if ministry_matches:
+                            existing = ministry_matches[0]
+                        else:
+                            # Defensive fallback: prefer unfinished, then first.
+                            unfinished = [cons for cons in post_id_matches if not cons.is_finished]
+                            existing = unfinished[0] if unfinished else post_id_matches[0]
+                        logger.warning(
+                            f"Found {len(post_id_matches)} consultations with post_id={post_id}; "
+                            f"selected URL={existing.url}"
+                        )
             
             if existing and not force_scrape:
                 # Only skip if the consultation is already finished
