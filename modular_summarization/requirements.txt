@@ -1,5 +1,5 @@
 # Core LLM & inference stack
-transformers==4.40.1
+transformers==5.10.1
 torch==2.2.1
 
 # Structured-JSON enforcement for LLM outputs
