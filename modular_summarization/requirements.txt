@@ -11,7 +11,7 @@ python-dotenv==1.0.1
 
 # Data wrangling & CSV helpers
 pandas==2.2.2
-pyarrow==19.0.1
+pyarrow==23.0.1
 
 # Progress bars (used in cleaning/utility scripts)
 tqdm==4.67.1
